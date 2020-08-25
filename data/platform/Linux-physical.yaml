@@ -1,0 +1,32 @@
+---
+# Install virtualization packages on physical hosts
+
+types::package:
+  qemu-kvm: {}
+  libvirt: {}
+  podman: {}
+  podman-docker: {}
+
+
+types::service:
+  libvirtd: {}
+
+
+# The 'group' provider doesn't manage members on Linux, so use augeas
+types::augeas:
+  libvirt_group_members:
+    context: '/files/etc/group/libvirt'
+    changes:
+      - 'set user[1] frex'
+      - 'set user[2] chris'
+    incl: '/etc/group'
+    lens: 'Group.lns'
+    require: 'Package[libvirt]'
+
+
+# Physical nodes should also be running SELinux and NFS mount home directories
+types::selboolean:
+  use_nfs_home_dirs:
+    persistent: true
+    value: on
+

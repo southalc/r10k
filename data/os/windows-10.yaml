@@ -1,0 +1,62 @@
+---
+# Install common tools using winstall
+
+classes:
+  - winstall
+
+types::types:
+  - registry_value
+
+# Define products with names as identified by the "puppet resource package" command
+winstall::products:
+  '7-Zip 19.00 (x64 edition)':
+    ensure: installed
+    source: 'https://www.7-zip.org/a/7z1900-x64.msi'
+    install_options:
+      - '/qn'
+  'VMware Remote Console':
+    ensure: installed
+    source: 'http://YOUR_LOCAL_URL/VMware-VMRC-11.2.0-16492666.exe'
+    install_options:
+      - '/s'
+      - '/v'
+      - '/qn'
+      - 'EULAS_AGREED=1'
+      - 'AUTOSOFTWAREUPDATE=1'
+      - 'DATACOLLECTION=0'
+  'PuTTY release 0.74 (64-bit)':
+    ensure: installed
+    source: 'https://the.earth.li/~sgtatham/putty/latest/w64/putty-64bit-0.74-installer.msi'
+    install_options:
+      - '/qn'
+  'Git version 2.28.0':
+    ensure: installed
+    source: 'https://github.com/git-for-windows/git/releases/download/v2.28.0.windows.1/Git-2.28.0-64-bit.exe'
+    install_options:
+      - '/VERYSILENT'
+      - '/NORESTART'
+  'Microsoft Visual Studio Code':
+    ensure: installed
+    tmp_file: VSCodeSetup-x64.exe
+    source: 'https://go.microsoft.com/fwlink/?Linkid=852157'
+    install_options:
+      - '/VERYSILENT'
+      - '/NORESTART'
+      - '/MERGETASKS=!runcode'
+
+
+types::command:
+  install_powerCLI:
+    provider: 'powershell'
+    command: |
+      [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+      Install-Module -Name VMware.PowerCLI
+    unless:
+      Get-InstalledModule VMware.PowerCLI
+
+types::registry_value:
+  'HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment\GIT_SSH':
+    ensure: present
+    type: string
+    data: 'C:\Program Files\PuTTY\plink.exe'
+

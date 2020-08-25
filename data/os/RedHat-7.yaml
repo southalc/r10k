@@ -1,0 +1,1510 @@
+---
+# TYPES PUPPET MODULE, RHEL7 STIG CONFIGURATION WITH AD JOIN
+#############################################################################################
+# Configure a RHEL7 system as an Active Directory client with full STIG compliance
+#
+# Use the following alias definition on RHEL7 to generate user password hashes
+# - This will use a random salt and the strongest supported hash method (currently SHA512)
+#   alias mkpasswd="python2 -c 'import crypt,getpass; print crypt.crypt(getpass.getpass())'"
+#
+# Use the following to generate a password hash suitable for `GRUB_PASSWORD_HASH`, and select
+# all the returned data beginning with 'grub.pbkdf2.sha512' through the end of the output.
+#   grub2-mkpasswd-pbkdf2
+#############################################################################################
+# Used types:  binary, exec, file, package, service, schedule, file_line, mount, user, concat_file, concat_fragment, firewalld_ipset ,firewalld_rich_rule
+# Required modules:  stdlib, concat, translate, inifile, firewalld
+#
+##### CUSTOMIZE SITE LOCAL VALUES WITH THESE PARAMETERS - OPTIONALLY, SEPARATE THIS TO A SEPARATE YAML FILE #####
+# SAMBA_WORKGROUP: 'uppercase NETBIOS domain name'
+# AD_DOMAIN: 'lowercase fully qualified domain name'
+# KERBEROS_REALM: 'uppercase fully qualified domain name'
+# ADJOIN_USER: 'AD service account with permissions to join  the domain'
+# ADJOIN_KEYTAB: 'base64 encoded keytab file for the ADJOIN_USER'
+# SYSLOG_HOST: 'fqdn of the remote network syslog server'
+# NTP_SERVER1: 'IP address of primary NTP server'
+# NTP_SERVER2: 'IP address of secondary NTP server'
+# NTP_KEY: 'NTP key hash'
+# NTP_KEY_TYPE: 'NTP key hash type'
+# TIMEZONE: 'one of the abbreviated time zones as listed under /usr/share/zoneinfo'
+# AUTOFS_HOME: 'Complete string (may be multi-line) to populate an indirect automount map'
+# AUTOFS_DIRECT: 'Complete string (may be multi-line) to populate a direct automount map'
+# SUDO_ADMINS: 'comma separated list of users or groups (groups identified by a leading percent sign)'
+# GRUB_PASSWORD_HASH: 'GRUB boot menu password'
+# EPO_SERVERS: '[array_of_McAfee_ePO_servers]'
+
+
+types::types:
+  - 'concat_file'
+  - 'concat_fragment'
+  - 'firewalld_ipset'
+  - 'certs::cacerts'
+
+
+types::exec_defaults:
+  path: '/sbin:/usr/sbin:/bin:/usr/bin'
+
+types::exec:
+  join_ad_domain:
+    provider: 'shell'
+    command: "kinit -kt /etc/adj.kt %{lookup('ADJOIN_USER')} ; net ads join -k"
+    unless: "net ads testjoin"
+    require:
+      - 'Package[samba-common-tools]'
+      - 'File[/etc/adj.kt]'
+      - 'File[/etc/krb5.conf]'
+      - 'Concat_file[/etc/samba/smb.conf]'
+    notify:
+      - 'Service[sssd]'
+      - 'Service[nfs-idmapd]'
+      - 'Service[rpc-gssd]'
+    environment:
+      - 'LOGNAME=root'
+      - 'USER=root'
+      - 'HOME=/root'
+  pam_pkcs11.conf:          # V-72433
+    provider: 'shell'
+    command: |
+      sed -r -i '/^(\s*)?cert_policy =/ {s/=.*/= ca, ocsp_on, signature;/g}' /etc/pam_pkcs11/pam_pkcs11.conf
+    unless: |
+      test -z "$(egrep '^(\s*)?cert_policy(\s*)?=(.*)' /etc/pam_pkcs11/pam_pkcs11.conf | grep -v ocsp_on)"
+    require: 'Package[pam_pkcs11]'
+  grub2_mkconfig_bios:
+    provider: 'shell'
+    command: 'grub2-mkconfig --output=/boot/grub2/grub.cfg'
+    refreshonly: true
+  grub2_mkconfig_uefi:
+    provider: 'shell'
+    command: 'grub2-mkconfig --output=/boot/efi/EFI/redhat/grub.cfg'
+    refreshonly: true
+  sysctl_reload:
+    command: 'sysctl --system'
+    refreshonly: true
+  # V-73177
+  wifi_radio_off:
+    command: 'nmcli radio wifi off'
+    require: 'Service[NetworkManager]'
+    unless: 'test $(nmcli radio wifi) == "disabled"'
+  # V-71973
+  aide_db:
+    provider: 'shell'
+    require: 'Package[aide]'    
+    refreshonly: true
+    command: |
+      if [ -f /var/lib/aide/aide.db.gz ]; then
+        aide --update
+        mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz
+      else
+        aide --init
+        mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz
+      fi
+  # V-71989
+  selinux_enforcing:
+    command: 'setenforce 1'
+    unless: 'test $(getenforce) == "Enforcing"'
+  # V-72067
+  fips_mode:
+    provider: 'shell'
+    require: 'Package[dracut-fips]'    
+    notify: 'Exec[grub2_mkconfig_bios]'
+    command: |
+      # Source '/etc/default/grub' to get 'GRUB_CMDLINE_LINUX' value as a shell variable
+      . /etc/default/grub
+      # Remove any 'audit', 'fips', and 'boot' options from 'GRUB_CMDLINE_LINUX' value
+      GRUB_CMDLINE_LINUX=$(echo ${GRUB_CMDLINE_LINUX} | sed -r -e 's/(\s*)?(boot=(\/dev\/(\w*)|\S*=\S*)|fips=[0-1]|audit=[0=1])//g')
+      # Get the UUID of the boot device
+      BOOT_UUID=$(lsblk --noheadings --output UUID $(df -lP /boot | grep '^/dev/' | awk '{print $1}'))
+      # Update 'GRUB_CMDLINE_LINUX' variable to enable audit, fips, and boot device by UUID
+      GRUB_CMDLINE_LINUX="${GRUB_CMDLINE_LINUX} audit=1 fips=1 boot=UUID=${BOOT_UUID}"
+      # Use sed to edit '/etc/default/grub' file with new value for 'GRUB_CMDLINE_LINUX'
+      sed -i -r "s|^GRUB_CMDLINE_LINUX(.*)|GRUB_CMDLINE_LINUX=\"${GRUB_CMDLINE_LINUX}\"|g" "/etc/default/grub"
+      # Build a new initramfs once dracut-fips is present
+      dracut -f
+    unless: |
+      # Don't run if 'fips=1' is already present in 'GRUB_CMDLINE_LINUX' value of '/etc/default/grub'
+      egrep -q '^GRUB_CMDLINE_LINUX(\s*)?=(.*)fips=1(.*)' /etc/default/grub
+  audit_suid_sgid:
+    provider: 'shell'
+    command: |
+      echo "# FILE MANAGED BY PUPPET" > /etc/audit/rules.d/50-suid.rules
+      for i in $(2>/dev/null find / -xdev -type f -perm -4000)
+      do
+        echo "-a always,exit -F path=${i} -F perm=x -F auid>=1000 -F auid!=4294967295 -F key=setuid" >> /etc/audit/rules.d/50-suid.rules
+      done
+      
+      echo "# FILE MANAGED BY PUPPET" > /etc/audit/rules.d/60-sgid.rules
+      for i in $(2>/dev/null find / -xdev -type f -perm -2000)
+      do
+        echo "-a always,exit -F path=${i} -F perm=x -F auid>=1000 -F auid!=4294967295 -F key=setgid" >> /etc/audit/rules.d/60-sgid.rules
+      done
+      chmod 600 /etc/audit/rules.d/50-suid.rules /etc/audit/rules.d/60-sgid.rules
+    umask: '600'
+    notify: 'Service[auditd]'
+    schedule: 'overnight'
+  # functionality enabled by firewalld module
+  #firewalld_reload:
+  #  command: 'firewall-cmd --reload'
+  #  refreshonly: true
+
+
+types::file_defaults:
+  ensure: 'file'
+  owner: 'root'
+  group: 'root'
+  mode: '0644'
+
+types::file:
+  /etc/issue:          # V-71863
+    content: |
+      You are accessing a U.S. Government (USG) Information System (IS) that is provided for USG-authorized use only.
+      By using this IS (which includes any device attached to this IS), you consent to the following conditions:
+      -The USG routinely intercepts and monitors communications on this IS for purposes including, but not limited to, penetration testing, COMSEC monitoring, network operations and defense, personnel misconduct (PM), law enforcement (LE), and counterintelligence (CI) investigations.
+      -At any time, the USG may inspect and seize data stored on this IS.
+      -Communications using, or data stored on, this IS are not private, are subject to routine monitoring, interception, and search, and may be disclosed or used for any USG-authorized purpose.
+      -This IS includes security measures (e.g., authentication and access controls) to protect USG interests--not for your personal benefit or privacy.
+      -Notwithstanding the above, using this IS does not constitute consent to PM, LE or CI investigative searching or monitoring of the content of privileged communications, or work product, related to personal representation or services by attorneys, psychotherapists, or clergy, and their assistants.  Such communications and work product are private and confidential.  See User Agreement for details.
+  /etc/localtime:
+    ensure: 'link'
+    target: "/usr/share/zoneinfo/%{lookup('TIMEZONE')}"
+  /etc/nsswitch.conf:
+    content: |
+      # FILE MANAGED BY PUPPET
+      passwd:     files sss
+      shadow:     files sss
+      group:      files sss
+      
+      # V-72281
+      hosts:      files dns myhostname
+
+      aliases:    files
+      automount:  files sss
+      bootparams: files
+      ethers:     files
+      netgroup:   files sss
+      netmasks:   files
+      networks:   files
+      protocols:  files
+      publickey:  files sss
+      rpc:        files
+      services:   files sss
+  # V-72281 - /etc/resolv.conf populated by NetworkManager
+  #/etc/resolv.conf:
+  /etc/nscd.conf:
+    notify: 'Service[nscd]'
+    content: |
+      # FILE MANAGED BY PUPPET
+      
+        logfile                /var/log/nscd.log
+        server-user            nscd
+        debug-level            0
+        paranoia               no
+      
+        enable-cache           hosts           yes
+        positive-time-to-live  hosts           3600
+        negative-time-to-live  hosts           20
+        suggested-size         hosts           211
+        check-files            hosts           yes
+        persistent             hosts           yes
+        shared                 hosts           yes
+        max-db-size            hosts           33554432
+  /etc/pam.d/passwd:
+    content: |
+      # FILE MANAGED BY PUPPET
+      auth       include      system-auth
+      account    include      system-auth
+      # V-81003
+      password   substack     system-auth
+      -password   optional    pam_gnome_keyring.so use_authtok
+      password   substack     postlogin
+  /etc/pam.d/system-auth:
+    content: |
+      # FILE MANAGED BY PUPPET
+      # V-71937
+      auth        required      pam_env.so
+      auth        [default=1 ignore=ignore success=ok] pam_succeed_if.so uid >= 1000 quiet
+      auth        [default=4 ignore=ignore success=ok] pam_localuser.so
+      # V-71943, V-71945
+      auth        requisite     pam_faillock.so preauth deny=3 even_deny_root unlock_time=604800 fail_interval=900
+      auth        [success=1 default=bad]    pam_unix.so  try_first_pass
+      auth        [default=die] pam_faillock.so authfail deny=3 even_deny_root unlock_time=604800 fail_interval=900
+      auth        sufficient    pam_faillock.so authsucc deny=3 even_deny_root unlock_time=604800 fail_interval=900
+      auth        requisite     pam_succeed_if.so uid >= 1000 quiet_success
+      auth        sufficient    pam_sss.so forward_pass
+      auth        required      pam_deny.so
+      
+      account     required      pam_access.so
+      account     required      pam_unix.so
+      account     sufficient    pam_localuser.so
+      account     sufficient    pam_succeed_if.so uid < 1000 quiet
+      account     [default=bad success=ok user_unknown=ignore] pam_sss.so
+      account     required      pam_permit.so
+      
+      # V-73159
+      password    requisite     pam_pwquality.so try_first_pass local_users_only retry=3 authtok_type=
+      # V-71933
+      password    requisite     pam_pwhistory.so use_authtok remember=5 retry=3
+      # V-71919
+      password    sufficient    pam_unix.so sha512 shadow  try_first_pass use_authtok
+      password    sufficient    pam_sss.so use_authtok
+      password    required      pam_deny.so
+      
+      session     optional      pam_keyinit.so revoke
+      session     required      pam_limits.so
+      -session     optional      pam_systemd.so
+      session     optional      pam_oddjob_mkhomedir.so umask=0077
+      session     [success=1 default=ignore] pam_succeed_if.so service in crond quiet use_uid
+      session     required      pam_unix.so
+      session     optional      pam_sss.so
+  /etc/pam.d/password-auth:
+    content: |
+      # FILE MANAGED BY PUPPET
+      # V-71937
+      auth        required      pam_env.so
+      auth        [default=1 ignore=ignore success=ok] pam_succeed_if.so uid >= 1000 quiet
+      auth        [default=4 ignore=ignore success=ok] pam_localuser.so
+      # V-71943, V-71945
+      auth        requisite     pam_faillock.so preauth deny=3 even_deny_root unlock_time=604800 fail_interval=900
+      auth        [success=1 default=bad]    pam_unix.so  try_first_pass
+      auth        [default=die] pam_faillock.so authfail deny=3 even_deny_root unlock_time=604800 fail_interval=900
+      auth        sufficient    pam_faillock.so authsucc deny=3 even_deny_root unlock_time=604800 fail_interval=900
+      auth        requisite     pam_succeed_if.so uid >= 1000 quiet_success
+      auth        sufficient    pam_sss.so forward_pass
+      auth        required      pam_deny.so
+      
+      account     required      pam_access.so
+      account     required      pam_unix.so
+      account     sufficient    pam_localuser.so
+      account     sufficient    pam_succeed_if.so uid < 1000 quiet
+      account     [default=bad success=ok user_unknown=ignore] pam_sss.so
+      account     required      pam_permit.so
+      
+      password    requisite     pam_pwquality.so try_first_pass local_users_only retry=3 authtok_type=
+      # V-71933
+      password    requisite     pam_pwhistory.so use_authtok remember=5 retry=3
+      # V-71919
+      password    sufficient    pam_unix.so sha512 shadow try_first_pass use_authtok
+      password    sufficient    pam_sss.so use_authtok
+      password    required      pam_deny.so
+      
+      session     optional      pam_keyinit.so revoke
+      session     required      pam_limits.so
+      -session     optional      pam_systemd.so
+      session     optional      pam_oddjob_mkhomedir.so umask=0077
+      session     [success=1 default=ignore] pam_succeed_if.so service in crond quiet use_uid
+      session     required      pam_unix.so
+      session     optional      pam_sss.so
+  /etc/pam.d/postlogin:
+    content: |
+      # FILE MANAGED BY PUPPET
+      # V-72275
+      session     [success=1 default=ignore] pam_succeed_if.so service !~ gdm* service !~ su* quiet
+      session     [default=2]   pam_lastlog.so nowtmp showfailed
+      # ssh connections display last login via PrintLastLog per STIG V-72245
+      session     [success=1 default=ignore] pam_succeed_if.so service =~ ssh* quiet
+      session     required      pam_lastlog.so showfailed
+  /etc/security/pwquality.conf:
+    content: |
+      # FILE MANAGED BY PUPPET
+      # V-71911
+      difok = 8
+      # V-71935
+      minlen = 15
+      # V-71907
+      dcredit = -1
+      # V-71903
+      ucredit = -1
+      # V-71905
+      lcredit = -1
+      # V-71909
+      ocredit = -1
+      # V-71913
+      minclass = 4
+      # V-71915
+      maxrepeat = 3
+      # V-71917
+      maxclassrepeat = 4
+  /etc/security/limits.d/stig.conf:
+    content: |
+      # FILE MANAGED BY PUPPET
+      # V-72217
+      * hard maxlogins 10
+  /etc/login.defs:
+    content: |
+      # FILE MANAGED BY PUPPET
+      MAIL_DIR        /var/spool/mail
+      
+      # V-71929
+      PASS_MAX_DAYS   60
+      # V-71925
+      PASS_MIN_DAYS   1
+      PASS_MIN_LEN    5
+      PASS_WARN_AGE   7
+      
+      UID_MIN                  1000
+      UID_MAX                 60000
+      SYS_UID_MIN               201
+      SYS_UID_MAX               999
+      
+      GID_MIN                  1000
+      GID_MAX                 60000
+      SYS_GID_MIN               201
+      SYS_GID_MAX               999
+      
+      # V-72013
+      CREATE_HOME     yes
+      
+      # V-71995
+      UMASK           077
+      
+      USERGROUPS_ENAB yes
+      
+      # V-71921
+      ENCRYPT_METHOD SHA512 
+      
+      # V-71951
+      FAIL_DELAY 4
+  /etc/libuser.conf:
+    content: |
+      # FILE MANAGED BY PUPPET
+      [import]
+      login_defs = /etc/login.defs
+      default_useradd = /etc/default/useradd
+      
+      [defaults]
+      
+      # V-71923
+      crypt_style = sha512
+      modules = files shadow
+      create_modules = files shadow
+      
+      [userdefaults]
+      LU_USERNAME = %n
+      LU_GIDNUMBER = %u
+      
+      [groupdefaults]
+      LU_GROUPNAME = %n
+      
+      [files]
+      
+      [shadow]
+      
+      [ldap]
+      
+      [sasl]
+  /etc/profile.d/stig.sh:
+    content: |
+      # FILE MANAGED BY PUPPET
+      # Do not apply to non-interactive shells
+      [[ $- == *i* ]] || return
+      
+      # Do not apply to non-login shells
+      shopt -q login_shell
+      [[ $? -eq 0 ]] || return
+      
+      # Do not apply to non-tty terminals. Local screen locks enforced site-wide
+      tty | grep -q tty
+      [[ $? -eq 0 ]] || return
+      
+      # V-72223
+      TMOUT=600
+      readonly TMOUT 
+      export TMOUT
+  /etc/default/useradd:
+    content: |
+      # FILE MANAGED BY PUPPET
+      GROUP=100
+      HOME=/home
+      # V-71941
+      INACTIVE=0
+      EXPIRE=
+      SHELL=/bin/bash
+      SKEL=/etc/skel
+      CREATE_MAIL_SPOOL=yes
+  /etc/chrony.conf:
+    notify: 'Service[chronyd]'
+    content: |
+      # FILE MANAGED BY PUPPET
+      # V-72269 - Using chrony instead of ntpd
+      server %{lookup('NTP_SERVER1')} version 4 iburst maxpoll 10 key %{lookup('NTP_KEY_INDEX')}
+      server %{lookup('NTP_SERVER2')} version 4 iburst maxpoll 10 key %{lookup('NTP_KEY_INDEX')}
+      keyfile /etc/chrony.keys
+      
+      driftfile /var/lib/chrony/drift
+      makestep 1.0 3
+      rtcsync
+      stratumweight 0
+      bindcmdaddress 127.0.0.1
+      bindcmdaddress ::1
+      noclientlog
+      logchange 0.5
+      logdir /var/log/chrony
+  /etc/chrony.keys:
+    group: 'chrony'
+    mode: '0640'
+    notify: 'Service[chronyd]'
+    content: |
+      # FILE MANAGED BY PUPPET
+      %{lookup('NTP_KEY_INDEX')} %{lookup('NTP_KEY_TYPE')} %{lookup('NTP_KEY')}
+  /etc/aide.conf:
+    mode: '0600'
+    require: 'Package[aide]'    
+    notify: 'Exec[aide_db]'
+    content: |
+      # FILE MANAGED BY PUPPET
+      @@define DBDIR /var/lib/aide
+      @@define LOGDIR /var/log/aide
+      
+      database=file:@@{DBDIR}/aide.db.gz
+      database_out=file:@@{DBDIR}/aide.db.new.gz
+      gzip_dbout=yes
+      verbose=5
+      report_url=file:@@{LOGDIR}/aide.log
+      report_url=stdout
+      
+      # Group definitions:  V-72069, V-72071, V-72073
+      DATAONLY   = p+n+u+g+s+acl+selinux+xattrs+sha512
+      PERMS      = p+u+g+selinux+acl+xattrs
+      LOG        = p+u+g+n+acl+selinux+ftype+xattrs
+      CONTENT    = ftype+acl+xattrs+sha512
+      CONTENT_EX = ftype+p+u+g+n+acl+selinux+xattrs+sha512
+      
+      # Selection lines
+      /boot/                    CONTENT_EX
+      /bin/                     CONTENT_EX
+      /sbin/                    CONTENT_EX
+      /lib/                     CONTENT_EX
+      /lib64/                   CONTENT_EX
+      /opt/                     CONTENT
+      /root/\..*                PERMS
+      /root/                    CONTENT_EX
+      !/usr/src/
+      !/usr/tmp/
+      /usr/                     CONTENT_EX
+      !/etc/mtab$
+      !/etc/.*~
+      /etc/hosts$               CONTENT_EX
+      /etc/host.conf$           CONTENT_EX
+      /etc/hostname$            CONTENT_EX
+      /etc/issue$               CONTENT_EX
+      /etc/issue.net$           CONTENT_EX
+      /etc/protocols$           CONTENT_EX
+      /etc/services$            CONTENT_EX
+      /etc/localtime$           CONTENT_EX
+      /etc/alternatives/        CONTENT_EX
+      /etc/mime.types$          CONTENT_EX
+      /etc/terminfo/            CONTENT_EX
+      /etc/exports$             CONTENT_EX
+      /etc/fstab$               CONTENT_EX
+      /etc/passwd$              CONTENT_EX
+      /etc/group$               CONTENT_EX
+      /etc/gshadow$             CONTENT_EX
+      /etc/shadow$              CONTENT_EX
+      /etc/security/opasswd$    CONTENT_EX
+      /etc/skel/                CONTENT_EX
+      /etc/hosts.allow$         CONTENT_EX
+      /etc/hosts.deny$          CONTENT_EX
+      /etc/firewalld/           CONTENT_EX
+      /etc/NetworkManager/      CONTENT_EX
+      /etc/networks$            CONTENT_EX
+      /etc/dhcp/                CONTENT_EX
+      /etc/wpa_supplicant/      CONTENT_EX
+      /etc/resolv.conf$         DATAONLY
+      /etc/nscd.conf$           CONTENT
+      /etc/login.defs$          CONTENT_EX
+      /etc/libuser.conf$        CONTENT_EX
+      /var/log/faillog$         PERMS
+      /var/log/lastlog$         PERMS
+      /var/run/faillock/        PERMS
+      /etc/pam.d/               CONTENT_EX
+      /etc/security$            CONTENT_EX
+      /etc/securetty$           CONTENT_EX
+      /etc/polkit-1/            CONTENT_EX
+      /etc/sudo.conf$           CONTENT_EX
+      /etc/sudoers$             CONTENT_EX
+      /etc/sudoers.d/           CONTENT_EX
+      /etc/profile$             CONTENT_EX
+      /etc/profile.d/           CONTENT_EX
+      /etc/bashrc$              CONTENT_EX
+      /etc/bash_completion.d/   CONTENT_EX
+      /etc/zprofile$            CONTENT_EX
+      /etc/zshrc$               CONTENT_EX
+      /etc/zlogin$              CONTENT_EX
+      /etc/zlogout$             CONTENT_EX
+      /etc/X11/                 CONTENT_EX
+      /etc/shells$              CONTENT_EX
+      /etc/yum.conf$            CONTENT_EX
+      /etc/yumex.conf$          CONTENT_EX
+      /etc/yumex.profiles.conf$ CONTENT_EX
+      /etc/yum/                 CONTENT_EX
+      /etc/yum.repos.d/         CONTENT_EX
+      !/var/log/httpd/
+      !/var/log/sa/
+      !/var/log/aide.log
+      /etc/audit/               CONTENT_EX
+      /etc/audisp/              CONTENT_EX
+      /etc/libaudit.conf$       CONTENT_EX
+      /etc/aide.conf$           CONTENT_EX
+      /etc/rsyslog.conf$        CONTENT_EX
+      /etc/rsyslog.d/           CONTENT_EX
+      /etc/logrotate.conf$      CONTENT_EX
+      /etc/logrotate.d/         CONTENT_EX
+      /var/log/                 LOG+ANF+ARF
+      /var/run/utmp$            LOG
+      /etc/pkcs11/              CONTENT_EX
+      /etc/pki/                 CONTENT_EX
+      /etc/ssl/                 CONTENT_EX
+      /etc/certmonger/          CONTENT_EX
+      /etc/systemd/             CONTENT_EX
+      /etc/sysconfig/           CONTENT_EX
+      /etc/rc.d/                CONTENT_EX
+      /etc/tmpfiles.d/          CONTENT_EX
+      /etc/machine-id$          CONTENT_EX
+      /etc/grub.d/              CONTENT_EX
+      /etc/grub2.cfg$           CONTENT_EX
+      /etc/dracut.conf$         CONTENT_EX
+      /etc/dracut.conf.d/       CONTENT_EX
+      /etc/ld.so.cache$         CONTENT_EX
+      /etc/ld.so.conf$          CONTENT_EX
+      /etc/ld.so.conf.d/        CONTENT_EX
+      /etc/sysctl.conf$         CONTENT_EX
+      /etc/sysctl.d/            CONTENT_EX
+      /etc/modprobe.d/          CONTENT_EX
+      /etc/modules-load.d/      CONTENT_EX
+      /etc/depmod.d/            CONTENT_EX
+      /etc/udev/                CONTENT_EX
+      /etc/crypttab$            CONTENT_EX
+      /var/spool/at/            CONTENT
+      /etc/at.allow$            CONTENT
+      /etc/at.deny$             CONTENT
+      /etc/cron.allow$          CONTENT_EX
+      /etc/cron.deny$           CONTENT_EX
+      /etc/cron.d/              CONTENT_EX
+      /etc/cron.daily/          CONTENT_EX
+      /etc/cron.hourly/         CONTENT_EX
+      /etc/cron.monthly/        CONTENT_EX
+      /etc/cron.weekly/         CONTENT_EX
+      /etc/crontab$             CONTENT_EX
+      /var/spool/cron/root/     CONTENT
+      /etc/anacrontab$          CONTENT_EX
+      /etc/ntp.conf$            CONTENT_EX
+      /etc/ntp/                 CONTENT_EX
+      /etc/chrony.conf$         CONTENT_EX
+      /etc/chrony.keys$         CONTENT_EX
+      /etc/aliases$             CONTENT_EX
+      /etc/aliases.db$          CONTENT_EX
+      /etc/postfix/             CONTENT_EX
+      /etc/mail.rc$             CONTENT_EX
+      /etc/mailcap$             CONTENT_EX
+      /etc/ssh/sshd_config$     CONTENT_EX
+      /etc/ssh/ssh_config$      CONTENT_EX
+      /etc/stunnel/             CONTENT_EX
+      /etc/vsftpd.conf$         CONTENT
+      /etc/vsftpd/              CONTENT
+      /etc/cups/                CONTENT_EX
+      /etc/cupshelpers/         CONTENT_EX
+      /etc/avahi/               CONTENT_EX
+      /etc/httpd/               CONTENT_EX
+      /etc/named/               CONTENT_EX
+      /etc/named.conf$          CONTENT_EX
+      /etc/named.iscdlv.key$    CONTENT_EX
+      /etc/named.rfc1912.zones$ CONTENT_EX
+      /etc/named.root.key$      CONTENT_EX
+      /etc/xinetd.d/            CONTENT_EX
+      /etc/                     PERMS
+  /etc/audisp/plugins.d/au-remote.conf:
+    mode: '0600'
+    notify: 'Service[auditd]'
+    content: |
+      # FILE MANAGED BY PUPPET
+      # V-81015
+      active = yes
+      # V-81017 - next 3 lines
+      direction = out
+      path = /sbin/audisp-remote
+      type = always
+      #args =
+      format = string
+  /etc/audisp/audispd.conf:
+    mode: '0600'
+    notify: 'Service[auditd]'
+    content: |
+      # FILE MANAGED BY PUPPET
+      q_depth = 250
+      # V-81019
+      overflow_action = SYSLOG
+      priority_boost = 4
+      max_restarts = 10
+      # V-81021
+      name_format = HOSTNAME
+      plugin_dir = /etc/audisp/plugins.d/
+  /etc/audisp/audisp-remote.conf:
+    mode: '0600'
+    notify: 'Service[auditd]'
+    content: |
+      # FILE MANAGED BY PUPPET
+      # This file controls the configuration of the audit remote logging subsystem, audisp-remote.
+      
+      port = 60
+      ##local_port =
+      transport = tcp
+      queue_file = /var/spool/audit/remote.log
+      mode = immediate
+      queue_depth = 2048
+      format = managed
+      network_retry_time = 1
+      max_tries_per_record = 3
+      max_time_per_record = 5
+      heartbeat_timeout = 0 
+      
+      # V-73163
+      network_failure_action = single
+      disk_low_action = ignore
+      # V-72087
+      disk_full_action = single
+      disk_error_action = warn_once
+      remote_ending_action = reconnect
+      generic_error_action = syslog
+      generic_warning_action = syslog
+      queue_error = stop
+      overflow_action = syslog
+      
+      # krb5_principal =
+      # krb5_client_name = auditd
+      # krb5_key_file = /etc/audisp/audisp-remote.key
+      # V-72085
+      enable_krb5 = yes
+      # V-72083
+      remote_server = 10.10.10.10
+  /etc/audit/auditd.conf:
+    mode: '0600'
+    notify: 'Service[auditd]'
+    content: |
+      # FILE MANAGED BY PUPPET
+      # This file controls the configuration of the audit daemon
+      
+      local_events = yes
+      write_logs = yes
+      log_file = /var/log/audit/audit.log
+      log_group = root
+      log_format = RAW
+      flush = INCREMENTAL_ASYNC
+      freq = 50
+      max_log_file = 100
+      num_logs = 14
+      priority_boost = 4
+      disp_qos = lossy
+      dispatcher = /sbin/audispd
+      name_format = NONE
+      ##name = mydomain
+      max_log_file_action = ROTATE
+      # V-72089
+      space_left = 2048
+      # V-72091
+      space_left_action = email
+      # V-72093
+      action_mail_acct = root
+      admin_space_left = 50
+      admin_space_left_action = SUSPEND
+      disk_full_action = SUSPEND
+      disk_error_action = SUSPEND
+      use_libwrap = yes
+      # #tcp_listen_port =
+      tcp_listen_queue = 5
+      tcp_max_per_addr = 1
+      # #tcp_client_ports = 1024-65535
+      tcp_client_max_idle = 0
+      enable_krb5 = no
+      krb5_principal = auditd
+      # #krb5_key_file = /etc/audit/audit.key
+      distribute_network = no
+  /etc/audit/rules.d:
+    ensure: 'directory'
+    mode: '0750'
+    purge: true
+    recurse: true
+    ignore:
+      # Files created by Exec['audit_suid_sgid'] resource
+      - '50-suid.rules'
+      - '60-sgid.rules'
+  /etc/audit/rules.d/01-pre.rules:
+    mode: '0600'
+    notify: 'Service[auditd]'
+    content: |
+      # FILE MANAGED BY PUPPET
+      # Initially delete all rules
+      -D
+      
+      # Set buffer size
+      -b 320
+      
+      # V-72081 - Set failure mode of the system
+      -f 1
+  /etc/audit/rules.d/20-stig.rules:
+    mode: '0600'
+    notify: 'Service[auditd]'
+    content: |
+      # FILE MANAGED BY PUPPET
+      # V-72095
+      -a always,exit -F arch=b32 -S execve -C uid!=euid -F euid=0 -k setuid
+      -a always,exit -F arch=b64 -S execve -C uid!=euid -F euid=0 -k setuid
+      -a always,exit -F arch=b32 -S execve -C gid!=egid -F egid=0 -k setgid
+      -a always,exit -F arch=b64 -S execve -C gid!=egid -F egid=0 -k setgid
+      # V-72097
+      -a always,exit -F arch=b32 -S chown -F auid>=1000 -F auid!=4294967295 -k perm_mod
+      -a always,exit -F arch=b64 -S chown -F auid>=1000 -F auid!=4294967295 -k perm_mod
+      # V-72099
+      -a always,exit -F arch=b32 -S fchown -F auid>=1000 -F auid!=4294967295 -k perm_mod
+      -a always,exit -F arch=b64 -S fchown -F auid>=1000 -F auid!=4294967295 -k perm_mod
+      # V-72101
+      -a always,exit -F arch=b32 -S lchown -F auid>=1000 -F auid!=4294967295 -k perm_mod
+      -a always,exit -F arch=b64 -S lchown -F auid>=1000 -F auid!=4294967295 -k perm_mod
+      # V-72103
+      -a always,exit -F arch=b32 -S fchownat -F auid>=1000 -F auid!=4294967295 -k perm_mod
+      -a always,exit -F arch=b64 -S fchownat -F auid>=1000 -F auid!=4294967295 -k perm_mod
+      # V-72105
+      -a always,exit -F arch=b32 -S chmod -F auid>=1000 -F auid!=4294967295 -k perm_mod
+      -a always,exit -F arch=b64 -S chmod -F auid>=1000 -F auid!=4294967295 -k perm_mod
+      # V-72107
+      -a always,exit -F arch=b32 -S fchmod -F auid>=1000 -F auid!=4294967295 -k perm_mod
+      -a always,exit -F arch=b64 -S fchmod -F auid>=1000 -F auid!=4294967295 -k perm_mod
+      # V-72109
+      -a always,exit -F arch=b32 -S fchmodat -F auid>=1000 -F auid!=4294967295 -k perm_mod
+      -a always,exit -F arch=b64 -S fchmodat -F auid>=1000 -F auid!=4294967295 -k perm_mod
+      # V-72111
+      -a always,exit -F arch=b32 -S setxattr -F auid>=1000 -F auid!=4294967295 -k perm_mod
+      -a always,exit -F arch=b64 -S setxattr -F auid>=1000 -F auid!=4294967295 -k perm_mod
+      # V-72113
+      -a always,exit -F arch=b32 -S fsetxattr -F auid>=1000 -F auid!=4294967295 -k perm_mod
+      -a always,exit -F arch=b64 -S fsetxattr -F auid>=1000 -F auid!=4294967295 -k perm_mod
+      # V-72115
+      -a always,exit -F arch=b32 -S lsetxattr -F auid>=1000 -F auid!=4294967295 -k perm_mod
+      -a always,exit -F arch=b64 -S lsetxattr -F auid>=1000 -F auid!=4294967295 -k perm_mod
+      # V-72117
+      -a always,exit -F arch=b32 -S removexattr -F auid>=1000 -F auid!=4294967295 -k perm_mod
+      -a always,exit -F arch=b64 -S removexattr -F auid>=1000 -F auid!=4294967295 -k perm_mod
+      # V-72119
+      -a always,exit -F arch=b32 -S fremovexattr -F auid>=1000 -F auid!=4294967295 -k perm_mod
+      -a always,exit -F arch=b64 -S fremovexattr -F auid>=1000 -F auid!=4294967295 -k perm_mod
+      # V-72121
+      -a always,exit -F arch=b32 -S lremovexattr -F auid>=1000 -F auid!=4294967295 -k perm_mod
+      -a always,exit -F arch=b64 -S lremovexattr -F auid>=1000 -F auid!=4294967295 -k perm_mod
+      # V-72123
+      -a always,exit -F arch=b32 -S creat -F exit=-EPERM -F auid>=1000 -F auid!=4294967295 -k access
+      -a always,exit -F arch=b32 -S creat -F exit=-EACCES -F auid>=1000 -F auid!=4294967295 -k access
+      -a always,exit -F arch=b64 -S creat -F exit=-EPERM -F auid>=1000 -F auid!=4294967295 -k access
+      -a always,exit -F arch=b64 -S creat -F exit=-EACCES -F auid>=1000 -F auid!=4294967295 -k access
+      # V-72125
+      -a always,exit -F arch=b32 -S open -F exit=-EPERM -F auid>=1000 -F auid!=4294967295 -k access
+      -a always,exit -F arch=b32 -S open -F exit=-EACCES -F auid>=1000 -F auid!=4294967295 -k access
+      -a always,exit -F arch=b64 -S open -F exit=-EPERM -F auid>=1000 -F auid!=4294967295 -k access
+      -a always,exit -F arch=b64 -S open -F exit=-EACCES -F auid>=1000 -F auid!=4294967295 -k access
+      # V-72127
+      -a always,exit -F arch=b32 -S openat -F exit=-EPERM -F auid>=1000 -F auid!=4294967295 -k access
+      -a always,exit -F arch=b32 -S openat -F exit=-EACCES -F auid>=1000 -F auid!=4294967295 -k access
+      -a always,exit -F arch=b64 -S openat -F exit=-EPERM -F auid>=1000 -F auid!=4294967295 -k access
+      -a always,exit -F arch=b64 -S openat -F exit=-EACCES -F auid>=1000 -F auid!=4294967295 -k access
+      # V-72129
+      -a always,exit -F arch=b32 -S open_by_handle_at -F exit=-EPERM -F auid>=1000 -F auid!=4294967295 -k access
+      -a always,exit -F arch=b32 -S open_by_handle_at -F exit=-EACCES -F auid>=1000 -F auid!=4294967295 -k access
+      -a always,exit -F arch=b64 -S open_by_handle_at -F exit=-EPERM -F auid>=1000 -F auid!=4294967295 -k access
+      -a always,exit -F arch=b64 -S open_by_handle_at -F exit=-EACCES -F auid>=1000 -F auid!=4294967295 -k access
+      # V-72131
+      -a always,exit -F arch=b32 -S truncate -F exit=-EPERM -F auid>=1000 -F auid!=4294967295 -k access
+      -a always,exit -F arch=b32 -S truncate -F exit=-EACCES -F auid>=1000 -F auid!=4294967295 -k access
+      -a always,exit -F arch=b64 -S truncate -F exit=-EPERM -F auid>=1000 -F auid!=4294967295 -k access
+      -a always,exit -F arch=b64 -S truncate -F exit=-EACCES -F auid>=1000 -F auid!=4294967295 -k access
+      # V-72133
+      -a always,exit -F arch=b32 -S ftruncate -F exit=-EPERM -F auid>=1000 -F auid!=4294967295 -k access
+      -a always,exit -F arch=b32 -S ftruncate -F exit=-EACCES -F auid>=1000 -F auid!=4294967295 -k access
+      -a always,exit -F arch=b64 -S ftruncate -F exit=-EPERM -F auid>=1000 -F auid!=4294967295 -k access
+      -a always,exit -F arch=b64 -S ftruncate -F exit=-EACCES -F auid>=1000 -F auid!=4294967295 -k access
+      # V-72135
+      -a always,exit -F path=/usr/sbin/semanage -F auid>=1000 -F auid!=4294967295 -k privileged-priv_change
+      # V-72137
+      -a always,exit -F path=/usr/sbin/setsebool -F auid>=1000 -F auid!=4294967295 -k privileged-priv_change
+      # V-72139
+      -a always,exit -F path=/usr/bin/chcon -F auid>=1000 -F auid!=4294967295 -k privileged-priv_change
+      # V-72141
+      -a always,exit -F path=/usr/sbin/setfiles -F auid>=1000 -F auid!=4294967295 -k privileged-priv_change
+      # V-72145
+      -w /var/run/faillock -p wa -k logins
+      # V-72147
+      -w /var/log/lastlog -p wa -k logins
+      # V-72149
+      -a always,exit -F path=/usr/bin/passwd -F auid>=1000 -F auid!=4294967295 -k privileged-passwd
+      # V-72151
+      -a always,exit -F path=/usr/sbin/unix_chkpwd -F auid>=1000 -F auid!=4294967295 -k privileged-passwd
+      # V-72153
+      -a always,exit -F path=/usr/bin/gpasswd -F auid>=1000 -F auid!=4294967295 -k privileged-passwd
+      # V-72155
+      -a always,exit -F path=/usr/bin/chage -F auid>=1000 -F auid!=4294967295 -k privileged-passwd
+      # V-72157
+      -a always,exit -F path=/usr/sbin/userhelper -F auid>=1000 -F auid!=4294967295 -k privileged-passwd
+      # V-72159
+      -a always,exit -F path=/usr/bin/su -F auid>=1000 -F auid!=4294967295 -k privileged-priv_change 
+      # V-72161
+      -a always,exit -F path=/usr/bin/sudo -F auid>=1000 -F auid!=4294967295 -k privileged-priv_change 
+      # V-72163
+      -w /etc/sudoers -p wa -k privileged-actions
+      -w /etc/sudoers.d/ -p wa -k privileged-actions
+      # V-72165
+      -a always,exit -F path=/usr/bin/newgrp -F auid>=1000 -F auid!=4294967295 -k privileged-priv_change
+      # V-72167
+      -a always,exit -F path=/usr/bin/chsh -F auid>=1000 -F auid!=4294967295 -k privileged-priv_change
+      # V-72171
+      -a always,exit -F arch=b32 -S mount -F auid>=1000 -F auid!=4294967295 -k privileged-mount
+      -a always,exit -F arch=b64 -S mount -F auid>=1000 -F auid!=4294967295 -k privileged-mount
+      -a always,exit -F path=/usr/bin/mount -F auid>=1000 -F auid!=4294967295 -k privileged-mount
+      # V-72173
+      -a always,exit -F path=/usr/bin/umount -F auid>=1000 -F auid!=4294967295 -k privileged-mount
+      # V-72175
+      -a always,exit -F path=/usr/sbin/postdrop -F auid>=1000 -F auid!=4294967295 -k privileged-postfix
+      # V-72177
+      -a always,exit -F path=/usr/sbin/postqueue -F auid>=1000 -F auid!=4294967295 -k privileged-postfix
+      # V-72179
+      -a always,exit -F path=/usr/libexec/openssh/ssh-keysign -F auid>=1000 -F auid!=4294967295 -k privileged-ssh
+      # V-72183
+      -a always,exit -F path=/usr/bin/crontab -F auid>=1000 -F auid!=4294967295 -k privileged-cron
+      # V-72185
+      -a always,exit -F path=/usr/sbin/pam_timestamp_check -F auid>=1000 -F auid!=4294967295 -k privileged-pam
+      # V-78999
+      -a always,exit -F arch=b32 -S create_module -k module-change
+      -a always,exit -F arch=b64 -S create_module -k module-change
+      # V-72187
+      -a always,exit -F arch=b32 -S init_module -k module-change
+      -a always,exit -F arch=b64 -S init_module -k module-change
+      # V-79001
+      -a always,exit -F arch=b32 -S finit_module -k module-change
+      -a always,exit -F arch=b64 -S finit_module -k module-change
+      # V-72189
+      -a always,exit -F arch=b32 -S delete_module -k module-change
+      -a always,exit -F arch=b64 -S delete_module -k module-change
+      # V-72191
+      -w /usr/bin/kmod -p x -F auid!=4294967295 -k module-change
+      # V-72197
+      -w /etc/passwd -p wa -k identity
+      # V-73165
+      -w /etc/group -p wa -k identity
+      # V-73167
+      -w /etc/gshadow -p wa -k identity
+      # V-73171
+      -w /etc/shadow -p wa -k identity
+      # V-73173
+      -w /etc/security/opasswd -p wa -k identity
+      # V-72199
+      -a always,exit -F arch=b32 -S rename -F auid>=1000 -F auid!=4294967295 -k delete
+      -a always,exit -F arch=b64 -S rename -F auid>=1000 -F auid!=4294967295 -k delete
+      # V-72201
+      -a always,exit -F arch=b32 -S renameat -F auid>=1000 -F auid!=4294967295 -k delete
+      -a always,exit -F arch=b64 -S renameat -F auid>=1000 -F auid!=4294967295 -k delete
+      # V-72203
+      -a always,exit -F arch=b32 -S rmdir -F auid>=1000 -F auid!=4294967295 -k delete
+      -a always,exit -F arch=b64 -S rmdir -F auid>=1000 -F auid!=4294967295 -k delete
+      # V-72205
+      -a always,exit -F arch=b32 -S unlink -F auid>=1000 -F auid!=4294967295 -k delete
+      -a always,exit -F arch=b64 -S unlink -F auid>=1000 -F auid!=4294967295 -k delete
+      # V-72207
+      -a always,exit -F arch=b32 -S unlinkat -F auid>=1000 -F auid!=4294967295 -k delete
+      -a always,exit -F arch=b64 -S unlinkat -F auid>=1000 -F auid!=4294967295 -k delete
+  /etc/audit/rules.d/99-post.rules:
+    mode: '0600'
+    notify: 'Service[auditd]'
+    content: |
+      # FILE MANAGED BY PUPPET
+      # Post processing options
+      -e 2
+  /etc/ssh/ssh_host_rsa_key.pub:          # V-72255
+    notify: 'Service[sshd]'
+  /etc/ssh/ssh_host_rsa_key:              # V-72257
+    group: 'ssh_keys'
+    mode: '0640'
+    notify: 'Service[sshd]'
+  /etc/ssh/ssh_host_ecdsa_key.pub:        # V-72255
+    notify: 'Service[sshd]'
+  /etc/ssh/ssh_host_ecdsa_key:            # V-72257
+    group: 'ssh_keys'
+    mode: '0640'
+    notify: 'Service[sshd]'
+  /etc/ssh/ssh_host_ed25519_key.pub:      # V-72255
+    notify: 'Service[sshd]'
+  /etc/ssh/ssh_host_ed25519_key:          # V-72257
+    group: 'ssh_keys'
+    mode: '0640'
+    notify: 'Service[sshd]'
+  /etc/krb5.conf:
+    require: 'Package[krb5-workstation]'
+    content: |
+      # FILE MANAGED BY PUPPET
+      include /var/lib/sss/pubconf/krb5.include.d/
+      
+      [libdefaults]
+        default_realm = %{lookup('KERBEROS_REALM')}
+        default_ccache_name = KEYRING:persistent:%%{}{uid}
+        allow_weak_crypto = false
+        dns_lookup_realm = true
+        dns_lookup_kdc = true
+        ticket_lifetime = 1d
+        renew_lifetime = 2d
+        rdns = true
+        forwardable = yes
+  /etc/sssd/conf.d:
+    ensure: 'directory'
+    mode: '0700'
+    purge: true
+    recurse: true
+    require: 'Package[sssd]'
+  /etc/sssd/sssd.conf:
+    mode: '0600'
+    notify: 'Service[sssd]'
+    content: |
+      # FILE MANAGED BY PUPPET
+      [sssd]
+      config_file_version = 2
+      # V-72427
+      services = ssh, nss, pam
+      domains = %{lookup('AD_DOMAIN')}
+      
+      [nss]
+      default_shell = /bin/bash
+      shell_fallback = /bin/bash
+      fallback_homedir = /home/%u
+      
+      [sssd]
+      # Access to the OCSP URL is blocked...
+      certificate_verification = no_ocsp
+      
+      [domain/%{lookup('AD_DOMAIN')}]
+      # V-72227, V-72229, V-72231
+      id_provider = ad
+      access_provider = ad
+      ad_domain = %{lookup('AD_DOMAIN')}
+      ldap_id_mapping = False
+      use_fully_qualified_names = False
+      cache_credentials = True
+      ad_gpo_access_control = enforcing
+      ad_gpo_ignore_unreadable = True
+      enumerate = True
+      dyndns_update = True
+  /etc/sysctl.d/01-stig.conf:
+    notify: 'Exec[sysctl_reload]'
+    content: |
+      # FILE MANAGED BY PUPPET
+      # V-77825
+      kernel.randomize_va_space = 2
+      # V-72283
+      net.ipv4.conf.all.accept_source_route = 0
+      # V-92251
+      net.ipv4.conf.all.rp_filter = 1
+      # V-92253
+      net.ipv4.conf.default.rp_filter = 1
+      # V-72285
+      net.ipv4.conf.default.accept_source_route = 0
+      # V-72287
+      net.ipv4.icmp_echo_ignore_broadcasts = 1
+      # V-72289
+      net.ipv4.conf.default.accept_redirects = 0
+      # V-73175
+      net.ipv4.conf.all.accept_redirects = 0
+      # V-72291
+      net.ipv4.conf.default.send_redirects = 0
+      # V-72293
+      net.ipv4.conf.all.send_redirects = 0
+      # V-72309
+      net.ipv4.ip_forward = 0
+      # V-72319
+      net.ipv6.conf.all.accept_source_route = 0
+  /etc/sysconfig/nfs:
+    content: |
+      # FILE MANAGED BY PUPPET
+      GSS_USE_PROXY=yes
+  /etc/idmapd.conf:
+    notify: 'Service[nfs-idmapd]'
+    content: |
+      # FILE MANAGED BY PUPPET
+      [General]
+      Domain = %{lookup('AD_DOMAIN')}
+      
+      [Mapping]
+      
+      [Translation]
+        GSS-Methods = static,nsswitch
+      
+      [Static]
+  /etc/dconf:
+    ensure: 'directory'
+    mode: '0755'
+  /etc/dconf/db:
+    ensure: 'directory'
+    mode: '0755'
+    require: 'File[/etc/dconf]'
+  /etc/dconf/db/local.d:
+    ensure: 'directory'
+    mode: '0755'
+    require: 'File[/etc/dconf/db]'
+  /etc/dconf/db/local.d/00-defaults:
+    require: 'File[/etc/dconf/db/local.d]'
+    content: |
+      # FILE MANAGED BY PUPPET
+      [org/gnome/login-screen]
+      # V-77819
+      enable-smartcard-authentication=true
+  /etc/dconf/db/local.d/00-disable-CAD:
+    require: 'File[/etc/dconf/db/local.d]'
+    content: |
+      # FILE MANAGED BY PUPPET
+      # V-94843
+      [org/gnome/settings-daemon/plugins/media-keys]
+      logout=''
+  /etc/dconf/db/local.d/01-banner-message:
+    require: 'File[/etc/dconf/db/local.d]'
+    content: |
+      # FILE MANAGED BY PUPPET
+      # V-71859, V-71861
+      [org/gnome/login-screen]
+      banner-message-enable=true
+      banner-message-text='You are accessing a U.S. Government (USG) Information System (IS) that is provided for USG-authorized use only.\nBy using this IS (which includes any device attached to this IS), you consent to the following conditions:\n-The USG routinely intercepts and monitors communications on this IS for purposes including, but not limited to, penetration testing, COMSEC monitoring, network operations and defense, personnel misconduct (PM), law enforcement (LE), and counterintelligence (CI) investigations.\n-At any time, the USG may inspect and seize data stored on this IS.\n-Communications using, or data stored on, this IS are not private, are subject to routine monitoring, interception, and search, and may be disclosed or used for any USG-authorized purpose.\n-This IS includes security measures (e.g., authentication and access controls) to protect USG interests--not for your personal benefit or privacy.\n-Notwithstanding the above, using this IS does not constitute consent to PM, LE or CI investigative searching or monitoring of the content of privileged communications, or work product, related to personal representation or services by attorneys, psychotherapists, or clergy, and their assistants. Such communications and work product are private and confidential. See User Agreement for details.'
+  /etc/dconf/db/local.d/00-screensaver:
+    require: 'File[/etc/dconf/db/local.d]'
+    content: |
+      # FILE MANAGED BY PUPPET
+      [org/gnome/desktop/screensaver]
+      # V-71891
+      lock-enabled=true
+      # V-71893
+      idle-delay=uint32 900
+      # V-71899
+      idle-activation-enabled=true
+      # V-71901
+      lock-delay=uint32 5
+      
+      [org/gnome/desktop/session]
+      idle-delay=uint32 900
+  /etc/dconf/db/local.d/locks:
+    ensure: 'directory'
+    mode: '0755'
+    require: 'File[/etc/dconf/db/local.d]'
+  /etc/dconf/db/local.d/locks/session:
+    require: 'File[/etc/dconf/db/local.d/locks]'
+    content: |
+      # FILE MANAGED BY PUPPET
+      # V-78995
+      /org/gnome/desktop/screensaver/lock-enabled
+      # V-73155
+      /org/gnome/desktop/screensaver/lock-delay
+      # V-73157
+      /org/gnome/desktop/session/idle-delay
+      # V-78997
+      /org/gnome/desktop/screensaver/idle-activation-enabled
+  /etc/sudoers.d:
+    ensure: 'directory'
+    mode: '0750'
+    purge: true
+    recurse: true
+  /etc/sudoers.d/admins:
+    mode: '0440'
+    require: 'File[/etc/sudoers.d]'
+    validate_cmd: '/usr/sbin/visudo -c -f %'
+    content: |
+      # FILE MANAGED BY PUPPET
+      %{lookup('SUDO_ADMINS')} %{hostname} = (root) PASSWD: ALL
+  /etc/gdm:
+    ensure: 'directory'
+    mode: '0755'
+  /etc/gdm/custom.conf:
+    require: 'File[/etc/gdm]'
+    content: |
+      # FILE MANAGED BY PUPPET
+      
+      [daemon]
+      # V-71953
+      AutomaticLoginEnable=false
+      # V-71955
+      TimedLoginEnable=false
+  /etc/grub.d/01_users:
+    mode: '0750'
+    notify: 'Exec[grub2_mkconfig_bios]'
+    content: |
+      # FILE MANAGED BY PUPPET
+      #!/bin/sh
+      cat << EOF
+      # V-71961, V-81005
+      set superusers=root
+      password_pbkdf2 root %{lookup('GRUB_PASSWORD_HASH')}
+      EOF
+  /etc/cron.allow:          # V-72053, V-72055
+    mode: '0600'
+    content: |
+      # FILE MANAGED BY PUPPET
+      root
+  /etc/cron.daily/aide:
+    mode: '0700'
+    content: |
+      #!/bin/bash
+      # FILE MANAGED BY PUPPET
+      # V-71973, V-71975
+      /usr/sbin/aide --check | /bin/mail -s "AIDE integrity check run for %{hostname}" root@%{fqdn}
+  /etc/yum.conf:
+    content: |
+      # FILE MANAGED BY PUPPET
+      [main]
+      cachedir=/var/cache/yum/$basearch/$releasever
+      keepcache=0
+      debuglevel=2
+      logfile=/var/log/yum.log
+      exactarch=1
+      obsoletes=1
+      # V-71977
+      gpgcheck=1
+      plugins=1
+      installonly_limit=3
+      # V-71979
+      localpkg_gpgcheck=1
+      # V-71987
+      clean_requirements_on_remove=1
+      repo_gpgcheck=0
+  /etc/modprobe.d/stig.conf:
+    content: |
+      # FILE MANAGED BY PUPPET
+      # V-71983 - requires both install and blacklist
+      install usb-storage /bin/true
+      blacklist usb-storage
+      # V-77821 - requires both install and blacklist
+      install dccp /bin/true
+      blacklist dccp 
+  /etc/rsyslog.conf:
+    content: |
+      # FILE MANAGED BY PUPPET
+      
+      #### MODULES ####
+      # V-72211 - no network modules
+      $ModLoad imuxsock # provides support for local system logging (e.g. via logger command)
+      $ModLoad imjournal # provides access to the systemd journal
+      
+      #### GLOBAL DIRECTIVES ####
+      $WorkDirectory /var/lib/rsyslog
+      $ActionFileDefaultTemplate RSYSLOG_TraditionalFileFormat
+      $IncludeConfig /etc/rsyslog.d/*.conf
+      $OmitLocalLogging on
+      $IMJournalStateFile imjournal.state
+      
+      # ### RULES ####
+      
+      # Logging to the console makes it nearly unusable
+      # kern.*                                                 /dev/console
+      *.info;mail.none;authpriv.none;cron.none                /var/log/messages
+      authpriv.*                                              /var/log/secure
+      mail.*                                                  -/var/log/maillog
+      *.emerg                                                 :omusrmsg:*
+      uucp,news.crit                                          /var/log/spooler
+      local7.*                                                /var/log/boot.log
+      
+      # ### begin forwarding rule ###
+      # The statement between the begin ... end define a SINGLE forwarding
+      # rule. They belong together, do NOT split them. If you create multiple
+      # forwarding rules, duplicate the whole block!
+      # Remote Logging (we use TCP for reliable delivery)
+      #
+      # An on-disk queue is created for this action. If the remote host is
+      # down, messages are spooled to disk and sent when it is up again.
+      # $ActionQueueFileName fwdRule1 # unique name prefix for spool files
+      #$ActionQueueMaxDiskSpace 1g   # 1gb space limit (use as much as possible)
+      #$ActionQueueSaveOnShutdown on # save messages to disk on shutdown
+      #$ActionQueueType LinkedList   # run asynchronously
+      #$ActionResumeRetryCount -1    # infinite retries if host is down
+      #remote host is: name/ip:port, e.g. 192.168.0.1:514, port optional
+      # V-72209
+      *.* @@%{lookup('SYSLOG_HOST')}:514
+      #### end of the forwarding rule ###
+  /etc/rsyslog.d/cron.conf:
+    content: |
+      # FILE MANAGED BY PUPPET
+      # V-72051
+      cron.*  /var/log/cron
+      & ~
+  /etc/auto.master:
+    notify: 'Service[autofs]'
+    content: |
+      # FILE MANAGED BY PUPPET
+      /home/nfs /etc/auto.home --timeout 900
+      /- /etc/auto.direct 
+  /etc/auto.home:
+    notify: 'Service[autofs]'
+    content: "%{lookup('AUTOFS_HOME')}"
+  /etc/auto.direct:
+    notify: 'Service[autofs]'
+    content: "%{lookup('AUTOFS_DIRECT')}"
+
+
+types::package_defaults:
+  ensure: 'installed'
+
+types::package:
+  sudo: {}
+  screen: {}          # V-71897
+  pam_pkcs11: {}      # V-72417
+  aide: {}            # V-71973
+  dracut-fips: {}     # V-72057
+  audit: {}           # V-72079
+  openssh-server: {}  # V-72233
+  chrony: {}          # V-72269
+  #firewalld: {}      # V-72273 - package installation managed by firewalld module
+  postfix: {}         # V-72297
+  esc: {}             # V-72417
+  sssd: {}            # V-72427
+  sssd-ad: {}
+  samba-common: {}
+  samba-common-tools: {}
+  krb5-workstation: {}
+  nfs-utils: {}
+  autofs: {}
+  NetworkManager: {}
+  nscd: {}
+  oddjob-mkhomedir: {}
+  rsh-server:               # V-71967
+    ensure: 'absent'
+  ypserv:                   # V-71969
+    ensure: 'absent'
+  telnet-server:            # V-72077
+    ensure: 'absent'
+  vsftpd:                   # V-72299
+    ensure: 'absent'
+  tftp-server:              # V-72301, V-72305
+    ensure: 'absent'
+  xorg-x11-server-common:   # V-72307
+    ensure: 'absent'
+  libreswan:                # V-72317
+    ensure: 'absent'
+
+
+types::service_defaults:
+  ensure: 'running'
+  enable: true
+
+types::service:
+  auditd:                   # V-72079
+    require: 'Package[audit]'
+    restart: '/usr/libexec/initscripts/legacy-actions/auditd/restart'
+    stop: '/usr/libexec/initscripts/legacy-actions/auditd/stop'
+  sshd:                     # V-72235
+    require: 'Package[openssh-server]'
+  chronyd:                  # V-72269
+    require: 'Package[chrony]'
+  #firewalld:               # V-72273, V-72315 service managed by firewalld module
+  #  require: 'Package[firewalld]'
+  postfix:                  # V-72297
+    require: 'Package[postfix]'
+  autofs:                   # V-71985 - requires autofs to be disabled unless required
+    require: 'Package[autofs]'
+  nfs-idmapd:
+    require: 'Package[nfs-utils]'
+  rpc-gssd:
+    require: 'Package[nfs-utils]'
+  NetworkManager:
+    require: 'Package[NetworkManager]'
+  nscd:
+    require: 'Package[nscd]'
+  sssd:
+    require:
+      - 'Package[sssd]'
+      - 'Package[sssd-ad]'
+  ctrl-alt-del.target:      # V-71993
+    ensure: 'stopped'
+    enable: 'mask'
+  kdump:                    # V-72057
+    ensure: 'stopped'
+    enable: false
+
+
+types::schedule:
+  overnight:
+    period: 'daily'
+    range: '8 - 10'
+
+
+types::file_line_defaults:
+  ensure: present
+
+types::file_line:
+  selinux_enforcing:                          # V-71989
+    path: '/etc/selinux/config'
+    line: 'SELINUX=enforcing'
+    match: '^SELINUX='
+  selinux_targeted:                           # V-71991
+    path: '/etc/selinux/config'
+    line: 'SELINUXTYPE=targeted'
+    match: '^SELINUXTYPE='
+  postfix_smtpd_client_restrictions:          # V-72297
+    path: '/etc/postfix/main.cf'
+    line: 'smtpd_client_restrictions = permit_mynetworks, reject'
+    match: '^smtpd_client_restrictions'
+    notify: 'Service[postfix]'
+
+
+types::mount:
+  # V-81009, V-81011, V-81013
+  /dev/shm:
+    ensure: present
+    device: 'tmpfs'
+    fstype: 'tmpfs'
+    options: 'defaults,nodev,nosuid,noexec'
+    pass: 0
+    dump: 0
+
+
+types::user:
+  root:
+    password_max_age: '-1'
+  # V-72001
+  games:
+    ensure: absent
+    forcelocal: true
+  # V-72001
+  gopher:
+    ensure: absent
+    forcelocal: true
+
+
+# Using 'concat_file' and 'concat_fragment' enables a global configuration to
+# be extended.  Good for sshd_config 'Match' blocks, samba shares, and more.
+types::concat_file_defaults:
+  owner: 'root'
+  group: 'root'
+  mode: '0644'
+  ensure_newline: true
+
+types::concat_file:
+  /etc/ssh/ssh_config:
+    tag: 'primary_ssh_config'
+    notify: 'Service[sshd]'
+  /etc/ssh/sshd_config:
+    tag: 'primary_sshd_config'
+    mode: '0600'           # V-72255
+    validate_cmd: '/usr/sbin/sshd -tf %'
+    notify: 'Service[sshd]'
+  /etc/samba/smb.conf:
+    tag: 'smb_conf'
+    require: 'Package[samba-common]'
+
+
+types::concat_fragment:
+  /etc/ssh/ssh_config:
+    tag: 'primary_ssh_config'
+    target: '/etc/ssh/ssh_config'
+    order: 1
+    content: |
+      # FILE MANAGED BY PUPPET
+      Host *.%{lookup('AD_DOMAIN')}
+        GSSAPIAuthentication yes
+        GSSAPIDelegateCredentials yes
+      
+      Host *
+        CanonicalDomains %{lookup('AD_DOMAIN')}
+        CanonicalizeMaxDots 1
+        CanonicalizeHostname yes
+        ForwardX11Trusted yes
+        SendEnv LANG LC_CTYPE LC_NUMERIC LC_TIME LC_COLLATE LC_MONETARY LC_MESSAGES
+        SendEnv LC_PAPER LC_NAME LC_ADDRESS LC_TELEPHONE LC_MEASUREMENT
+        SendEnv LC_IDENTIFICATION LC_ALL LANGUAGE
+        SendEnv XMODIFIERS
+  /etc/ssh/sshd_config:
+    tag: 'primary_sshd_config'
+    target: '/etc/ssh/sshd_config'
+    order: 1
+    content: |
+      # FILE MANAGED BY PUPPET
+      # V-72251 - deprecated
+      Protocol 2
+      # V-72255, V-72257
+      HostKey /etc/ssh/ssh_host_rsa_key
+      HostKey /etc/ssh/ssh_host_ecdsa_key
+      HostKey /etc/ssh/ssh_host_ed25519_key
+      # V-72221
+      Ciphers aes256-ctr,aes192-ctr,aes128-ctr
+      SyslogFacility AUTHPRIV
+      # V-72247
+      PermitRootLogin no
+      # V-72263
+      StrictModes yes
+      AuthorizedKeysFile      .ssh/authorized_keys
+      # V-72239 - deprecated
+      RhostsRSAAuthentication no
+      # V-71959
+      HostbasedAuthentication no
+      # V-72249
+      IgnoreUserKnownHosts yes
+      # V-72243
+      IgnoreRhosts yes
+      # V-71939
+      PermitEmptyPasswords no
+      PasswordAuthentication yes
+      ChallengeResponseAuthentication yes
+      # V-72261
+      KerberosAuthentication no
+      # V-72259 - STIG override.  Enable GSSAPI with AD integration
+      GSSAPIAuthentication yes
+      GSSAPICleanupCredentials no
+      UsePAM yes
+      # V-72303
+      X11Forwarding yes
+      # V-72245
+      PrintLastLog yes
+      # V-72265
+      UsePrivilegeSeparation sandbox
+      # V-71957
+      PermitUserEnvironment no
+      # V-72267
+      Compression delayed
+      # V-72237 - Value should be 600 per STIG
+      ClientAliveInterval 0
+      # V-72241
+      ClientAliveCountMax 0
+      # V-72225
+      Banner /etc/issue
+      AcceptEnv LANG LC_CTYPE LC_NUMERIC LC_TIME LC_COLLATE LC_MONETARY LC_MESSAGES
+      AcceptEnv LC_PAPER LC_NAME LC_ADDRESS LC_TELEPHONE LC_MEASUREMENT
+      AcceptEnv LC_IDENTIFICATION LC_ALL LANGUAGE
+      AcceptEnv XMODIFIERS
+      Subsystem       sftp    /usr/libexec/openssh/sftp-server
+      # V-72253
+      MACs hmac-sha2-512,hmac-sha2-256
+      AuthorizedKeysCommand /usr/bin/sss_ssh_authorizedkeys
+      AuthorizedKeysCommandUser nobody
+  /etc/samba/smb.conf:
+    tag: 'smb_conf'
+    target: '/etc/samba/smb.conf'
+    order: 1
+    content: |
+      # FILE MANAGED BY PUPPET
+      [global]
+        workgroup = %{lookup('SAMBA_WORKGROUP')}
+        client signing = yes
+        client use spnego = yes
+        kerberos method = system keytab
+        log file = /var/log/samba/%m.log
+        realm = %{lookup('KERBEROS_REALM')}
+        security = ads
+
+
+# Uncomment to create an ipset for McAfee ePO servers
+#types::firewalld_ipset:
+#  mcafee_epo_servers:
+#    ensure: present
+#    entries: "%{alias('EPO_SERVERS')}"
+#    notify: 'Exec[firewalld_reload]'
+
+# Uncomment to permit McAfee ePO server access to the management agent
+#firewalld::firewalld_rich_rule:
+#  mcafee_epo_access:
+#    ensure: present
+#    zone:   'public'
+#    family: 'ipv4'
+#    source:
+#      ipset: 'mcafee_epo_servers'
+#    port:
+#      port: '591'
+#      protocol: 'tcp'
+#    log:
+#      prefix: 'hbss_inbound_ePO_wakeup'
+#      level: 'info'
+#    action: 'accept'
+#    notify: 'Exec[firewalld_reload]'
+

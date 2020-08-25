@@ -1,0 +1,284 @@
+---
+# TYPES PUPPET MODULE, RHEL6 STIG CONFIGURATION WITH AD JOIN
+#############################################################################################
+# Configure a RHEL6 system as an Active Directory client with STIG compliance
+#
+# Use the following alias definition on RHEL6 to generate user password hashes
+# - This will use a random salt and the strongest supported hash method (currently SHA512)
+#   alias mkpasswd="python2 -c 'import crypt,getpass; print crypt.crypt(getpass.getpass())'"
+#
+# Use the following to generate a password hash suitable for `GRUB_PASSWORD_HASH`, and select
+# all the returned data beginning with 'grub.pbkdf2.sha512' through the end of the output.
+#   grub2-mkpasswd-pbkdf2
+#############################################################################################
+# Used types:  binary, exec, file, package, service, schedule, file_line, mount, user, concat_file, concat_fragment
+# Required modules:  stdlib, concat, translate, inifile
+#
+##### CUSTOMIZE SITE VALUES - OPTIONALLY, SEPARATE TO A SEPARATE FILE #####
+# SAMBA_WORKGROUP: 'uppercase NETBIOS domain name'
+# AD_DOMAIN: 'lowercase fully qualified domain name'
+# KERBEROS_REALM: 'uppercase fully qualified domain name'
+# ADJOIN_USER: 'AD service account with permissions to join  the domain'
+# ADJOIN_KEYTAB: 'base64 encoded keytab file for the ADJOIN_USER'
+# SYSLOG_HOST: 'fqdn of the remote network syslog server'
+# NTP_SERVER1: 'IP address of primary NTP server'
+# NTP_SERVER2: 'IP address of secondary NTP server'
+# NTP_KEY1: 'NTP key hash'
+# NTP_KEY1_TYPE: 'NTP key hash type'
+# TIMEZONE: 'one of the abbreviated time zones as listed under /usr/share/zoneinfo'
+# AUTOFS_HOME: 'Complete string (may be multi-line) to populate an indirect automount map'
+# AUTOFS_DIRECT: 'Complete string (may be multi-line) to populate a direct automount map'
+# SUDO_ADMINS: 'comma separated list of users or groups (groups identified by a leading percent sign)'
+# GRUB_PASSWORD_HASH: 'GRUB boot menu password'
+# ROOT_PASSWORD_HASH: 'root password hash'
+# ADMIN_USER: 'local user account'
+# ADMIN_PASSWORD_HASH: 'admin password hash'
+# EPO_SERVERS: '[array_of_McAfee_ePO_servers]'
+
+
+types::package_defaults:
+  ensure: 'installed'
+
+types::package:
+  sudo: {}
+  adcli: {}
+  selinux-policy: {}
+  chrony: {}
+  krb5-workstation: {}
+  openssh-server: {}
+  sssd: {}
+  postfix: {}
+  nfs-utils: {}
+  autofs: {}
+  ipa-client:
+    ensure: 'absent'
+  ntp:
+    ensure: 'absent'
+  ntpdate:
+    ensure: 'absent'
+
+
+types::file_defaults:
+  ensure: 'file'
+  owner: 'root'
+  group: 'root'
+  mode: '644'
+
+types::file:
+  '/etc/issue':
+    content: |
+      This system is managed by my basic puppet module
+  '/etc/idmapd.conf':
+    content: |
+      ## FILE MANAGED BY PUPPET - LOCAL CHANGES WILL NOT PERSIST
+      [General]
+      Domain = %{lookup('AD_DOMAIN')}
+  '/etc/nsswitch.conf':
+    content: |
+      ## FILE MANAGED BY PUPPET - LOCAL CHANGES WILL NOT PERSIST
+      
+      # Users and groups
+      passwd:    files sss
+      shadow:    files sss
+      group:     files sss
+      
+      # Hosts
+      hosts:    files dns 
+      
+      # Misc services
+      aliases:      files
+      automount:    files
+      bootparams:   files
+      ethers:       files
+      netgroup:     files
+      netmasks:     files
+      networks:     files
+      protocols:    files
+      publickey:    files
+      rpc:          files
+      services:     files
+  '/etc/sssd/conf.d':
+    ensure: 'absent'
+    force: true
+    require: 'Package[sssd]'
+  '/etc/chrony.conf':
+    mode: '0640'
+    require: 'Package[chrony]'
+    content: |
+      ## FILE MANAGED BY PUPPET - LOCAL CHANGES WILL NOT PERSIST
+      server %{lookup('NTP_SERVER1')} version 4 iburst maxpoll 10 key %{lookup('NTP_KEY1_INDEX')}
+      server %{lookup('NTP_SERVER2')} version 4 iburst maxpoll 10 key %{lookup('NTP_KEY1_INDEX')}
+      driftfile /var/lib/chrony/drift
+      makestep 10 3
+      rtcsync
+      stratumweight 0
+      bindcmdaddress 127.0.0.1
+      bindcmdaddress ::1
+      keyfile /etc/chrony.keys
+      # commandkey 2
+      generatecommandkey
+      # noclientlog
+      logchange 0.5
+      logdir /var/log/chrony
+  '/etc/chrony.keys':
+    mode: '0600'
+    require: 'Package[chrony]'
+    content: |
+      ## FILE MANAGED BY PUPPET - LOCAL CHANGES WILL NOT PERSIST
+      %{lookup('NTP_KEY1_INDEX')} %{lookup('NTP_KEY1_TYPE')} %{lookup('NTP_KEY1')}
+  '/etc/krb5.conf':
+    require: 'Package[krb5-workstation]'
+    content: |
+      ## FILE MANAGED BY PUPPET - LOCAL CHANGES WILL NOT PERSIST
+      includedir /var/lib/sss/pubconf/krb5.include.d/
+      
+      [libdefaults]
+        default_ccache_name = KEYRING:persistent:%%{}{uid}
+        default_realm = %{lookup('KERBEROS_REALM')}
+        allow_weak_crypto = false
+        dns_lookup_realm = true
+        dns_lookup_kdc = true
+        ticket_lifetime = 8h
+        renew_lifetime = 1d
+        rdns = false
+        forwardable = yes
+  '/etc/sssd/conf.d':
+    ensure: 'absent'
+    force: true
+    require: 'Package[sssd]'
+  '/etc/sssd/sssd.conf':
+    mode: '0600'
+    require: 'Package[sssd]'
+    content: |
+      ## FILE MANAGED BY PUPPET - LOCAL CHANGES WILL NOT PERSIST
+      [sssd]
+      config_file_version = 2
+      services = nss, pam, ssh
+      domains = %{lookup('AD_DOMAIN')}
+      
+      [nss]
+      default_shell = /bin/bash
+      shell_fallback = /bin/bash
+      fallback_homedir = /home/%u
+      
+      [domain/%{lookup('AD_DOMAIN')}]
+      id_provider = ad
+      access_provider = ad
+      ad_domain = %{lookup('AD_DOMAIN')}
+      ldap_id_mapping = False
+      use_fully_qualified_names = False
+      cache_credentials = True
+      ad_gpo_access_control = enforcing
+      enumerate = True
+  /etc/sysconfig/iptables:
+    mode: '0600'
+    content: |
+      ## FILE MANAGED BY PUPPET - LOCAL CHANGES WILL NOT PERSIST
+      *filter
+      :INPUT DROP
+      :FORWARD DROP
+      :OUTPUT ACCEPT
+      -A INPUT -m state --state RELATED,ESTABLISHED -j ACCEPT
+      -A INPUT -i lo -j ACCEPT
+      -A INPUT -p icmp -j ACCEPT
+      -A INPUT -p tcp -m state --state NEW -m tcp --dport 22 -j ACCEPT
+      COMMIT
+  '/etc/ssh/sshd_config':
+    mode: '0600'
+    notify: 'Service[sshd]'
+    require: 'Package[openssh-server]'
+    content: |
+      ## FILE MANAGED BY PUPPET - LOCAL CHANGES WILL NOT PERSIST
+      Protocol 2
+      SyslogFacility AUTHPRIV
+      PasswordAuthentication yes
+      ChallengeResponseAuthentication no
+      GSSAPIAuthentication yes
+      GSSAPICleanupCredentials yes
+      UsePAM yes
+      AcceptEnv LANG LC_CTYPE LC_NUMERIC LC_TIME LC_COLLATE LC_MONETARY LC_MESSAGES
+      AcceptEnv LC_PAPER LC_NAME LC_ADDRESS LC_TELEPHONE LC_MEASUREMENT
+      AcceptEnv LC_IDENTIFICATION LC_ALL LANGUAGE
+      AcceptEnv XMODIFIERS
+      X11Forwarding yes
+      Subsystem       sftp    /usr/libexec/openssh/sftp-server
+
+
+types::exec_defaults:
+  path: '/sbin:/usr/sbin:/bin:/usr/bin'
+
+types::exec:
+  selinux_enforcing:
+    command: 'setenforce Enforcing'
+    unless: 'test "$(getenforce)" == "Enforcing"'
+    require:
+      - 'Package[selinux-policy]'
+  iptables_restore:
+    command: 'iptables-restore /etc/sysconfig/iptables'
+    subscribe:
+      - 'File[/etc/sysconfig/iptables]'
+    refreshonly: true
+  selinux_enforcing:
+    command: 'setenforce 1'
+    unless: 'test "$(/usr/sbin/getenforce)" == "Enforcing"'
+    require:
+      - 'Package[selinux-policy]'
+  adcli_join:
+    # To join with a username/password
+    # command: "echo -n 'PASSWORD' | adcli join --domain='<domain>' --login-user='<user>' --stdin-password"
+    # To join with a Kerberos credential from keytab
+    command: "kinit -kt /etc/adj.kt %{lookup('AD_DOMAIN')} && adcli join --domain='%{lookup('AD_DOMAIN')}' --login-user='%{lookup('AD_DOMAIN')}' -H $(hostname -f) -C"
+    unless: 'kinit -kt /etc/krb5.keytab ${HOSTNAME^^}\$'
+    require:
+      - 'File[/etc/adj.kt]'
+      - 'File[/etc/krb5.conf]'
+      - 'Package[adcli]'
+    notify:
+      - 'Service[sssd]'
+      - 'Service[rpcidmapd]'
+      - 'Service[rpcgssd]'
+
+
+types::service_defaults:
+  ensure: 'running'
+  enable: true
+
+types::service:
+  rpcidmapd:
+    subscribe: 'File[/etc/idmapd.conf]'
+    require: 'Package[nfs-utils]'
+  rpcgssd:
+    require: 'Package[nfs-utils]'
+  chronyd:
+    require: 'Package[chrony]'
+    subscribe:
+      - 'File[/etc/chrony.conf]'
+      - 'File[/etc/chrony.keys]'
+  postfix:
+    require: 'Package[postfix]'
+  sssd:
+    require: 'Package[sssd]'
+    subscribe: 'File[/etc/sssd/sssd.conf]'
+  sshd:
+    require: 'Package[openssh-server]'
+  autofs:
+    require: 'Package[autofs]'
+
+
+types::file_line_defaults:
+  ensure: 'present'
+
+types::file_line:
+  postfix_relayhost:
+    path: '/etc/postfix/main.cf'
+    line: "relayhost = [%{lookup('SMTP_RELAY')}]"
+    match: '^relayhost ='
+    notify:
+      - 'Service[postfix]'
+  postfix_smtpd_client_restrictions:
+    path: '/etc/postfix/main.cf'
+    line: 'smtpd_client_restrictions = permit_mynetworks,reject'
+    match: '^smtpd_client_restrictions ='
+    notify:
+      - 'Service[postfix]'
+

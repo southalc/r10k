@@ -1,0 +1,43 @@
+---
+# Reference "site.yaml" file for staging to "/etc/puppetlabs/r10k/site.yaml"
+# - Update values per the in-line descriptions
+#
+# To generate user password hashes on RHEL7/CentOS7:
+#   python2 -c 'import crypt,getpass; print crypt.crypt(getpass.getpass())'
+#
+# To generate a password hash suitable for `GRUB_PASSWORD_HASH`:
+#   grub2-mkpasswd-pbkdf2
+#############################################################################################
+
+SAMBA_WORKGROUP: 'uppercase NETBIOS domain name'
+AD_DOMAIN: 'lowercase DNS domain name'
+KERBEROS_REALM: 'uppercase DNS domain name'
+DNS_SERVERS: 'comma separated list of DNS server IP addresses'
+
+ADJOIN_USER: 'AD service account with permissions to join  the domain'
+ADJOIN_KEYTAB: 'base64 encoded keytab file for the ADJOIN_USER'
+
+SYSLOG_HOST: 'IP address or FQDN of the remote network syslog server'
+
+NTP_SERVER1: 'IP address of primary NTP server'
+NTP_SERVER2: 'IP address of secondary NTP server'
+NTP_KEY: 'NTP key hash'
+NTP_KEY_TYPE: 'NTP key hash type'
+
+TIMEZONE: 'one of the abbreviated time zones as listed under /usr/share/zoneinfo'
+
+MAIL_RELAY: 'IP address or FQDN of the SMTP relay'
+
+AUTOFS_HOME: 'Complete string (may be multi-line) to populate an indirect automount map'
+AUTOFS_DIRECT: 'Complete string (may be multi-line) to populate a direct automount map'
+
+SUDO_ADMINS: 'string as a comma separated list of users or groups (groups identified by a leading percent sign)'
+
+GRUB_PASSWORD_HASH: 'GRUB boot menu password'
+
+ROOT_K5LOGIN: 'array of Kerberos principals that will be permitted to assume root'
+
+EPO_SERVERS: '[array_of_McAfee_ePO_servers]'
+
+ROOT_PASSWORD_HASH: 'generate password hash per above example'
+

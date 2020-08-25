@@ -1,0 +1,402 @@
+---
+# Configuration for RedHat 8
+
+types::types:
+  - 'concat_file'
+  - 'concat_fragment'
+  - 'firewalld_ipset'
+  - 'ini_setting'
+#  - 'certs::cacerts'
+
+
+types::package_defaults:
+  ensure: 'installed'
+
+types::package:
+  sudo: {}
+  openssh-clients: {}
+  openssh-server: {}
+  samba-common: {}
+  samba-common-tools: {}
+  selinux-policy: {}
+  chrony: {}
+  krb5-workstation: {}
+  sssd: {}
+  sssd-ad: {}
+  postfix: {}
+  nfs-utils: {}
+  autofs: {}
+
+
+types::file_defaults:
+  ensure: 'file'
+  owner: 'root'
+  group: 'root'
+  mode: '644'
+
+types::file:
+  /etc/issue:
+    content: |
+      This system is managed with the basic puppet module
+  /etc/pam.d/system-auth:
+    content: |
+      ## FILE MANAGED BY PUPPET
+      auth        required                                     pam_env.so
+      auth        required                                     pam_faildelay.so delay=2000000
+      auth        [default=1 ignore=ignore success=ok]         pam_succeed_if.so uid >= 1000 quiet
+      auth        [default=4 ignore=ignore success=ok]         pam_localuser.so
+      auth        requisite                                    pam_faillock.so preauth deny=3 unlock_time=604800 fail_interval=900
+      auth        [success=1 default=bad]                      pam_unix.so try_first_pass
+      auth        [default=die]                                pam_faillock.so authfail deny=3 unlock_time=604800 fail_interval=900
+      auth        sufficient                                   pam_faillock.so authsucc deny=3 unlock_time=604800 fail_interval=900
+      auth        requisite                                    pam_succeed_if.so uid >= 1000 quiet_success
+      auth        sufficient                                   pam_sss.so
+      auth        required                                     pam_deny.so
+      
+      account     required                                     pam_unix.so
+      account     sufficient                                   pam_localuser.so
+      account     sufficient                                   pam_succeed_if.so uid < 1000 quiet
+      account     [default=bad success=ok user_unknown=ignore] pam_sss.so
+      account     required                                     pam_permit.so
+      
+      password    requisite                                    pam_pwquality.so try_first_pass local_users_only retry=3 authtok_type=
+      password    sufficient                                   pam_unix.so sha512 shadow  try_first_pass use_authtok remember=5
+      password    sufficient                                   pam_sss.so use_authtok
+      password    required                                     pam_deny.so
+      
+      session     optional                                     pam_keyinit.so revoke
+      session     required                                     pam_limits.so
+      -session    optional                                     pam_systemd.so
+      session     [success=1 default=ignore]                   pam_succeed_if.so service in crond quiet use_uid
+      session     required                                     pam_unix.so
+      session     optional                                     pam_sss.so
+  /etc/pam.d/password-auth:
+    content: |
+      ## FILE MANAGED BY PUPPET
+      auth        required                                     pam_env.so
+      auth        required                                     pam_faildelay.so delay=2000000
+      auth        [default=1 ignore=ignore success=ok]         pam_succeed_if.so uid >= 1000 quiet
+      auth        [default=4 ignore=ignore success=ok]         pam_localuser.so
+      auth        requisite                                    pam_faillock.so preauth deny=3 unlock_time=604800 fail_interval=900
+      auth        [success=1 default=bad]                      pam_unix.so try_first_pass
+      auth        [default=die]                                pam_faillock.so authfail deny=3 unlock_time=604800 fail_interval=900
+      auth        sufficient                                   pam_faillock.so authsucc deny=3 unlock_time=604800 fail_interval=900
+      auth        requisite                                    pam_succeed_if.so uid >= 1000 quiet_success
+      auth        sufficient                                   pam_sss.so
+      auth        required                                     pam_deny.so
+      
+      account     required                                     pam_unix.so
+      account     sufficient                                   pam_localuser.so
+      account     sufficient                                   pam_succeed_if.so uid < 1000 quiet
+      account     [default=bad success=ok user_unknown=ignore] pam_sss.so
+      account     required                                     pam_permit.so
+      
+      password    requisite                                    pam_pwquality.so try_first_pass local_users_only retry=3 authtok_type=
+      password    sufficient                                   pam_unix.so sha512 shadow  try_first_pass use_authtok remember=5
+      password    sufficient                                   pam_sss.so use_authtok
+      password    required                                     pam_deny.so
+      
+      session     optional                                     pam_keyinit.so revoke
+      session     required                                     pam_limits.so
+      -session    optional                                     pam_systemd.so
+      session     [success=1 default=ignore]                   pam_succeed_if.so service in crond quiet use_uid
+      session     required                                     pam_unix.so
+      session     optional                                     pam_sss.so
+  /etc/ssh/ssh_config:
+    content: |
+      # FILE MANAGED BY PUPPET
+      
+      # Follow system-wide Crypto Policy, if defined:
+      Include /etc/crypto-policies/back-ends/openssh.config
+      
+      Include /etc/ssh/ssh_config.d/*.conf
+  /etc/ssh/ssh_config.d:
+    ensure: 'directory'
+    mode: '0755'
+    purge: true
+    recurse: true
+  /etc/ssh/ssh_config.d/05-default.conf:
+    content: |
+      # FILE MANAGED BY PUPPET
+      
+      Host *
+        GSSAPIAuthentication yes
+        ForwardX11Trusted yes
+        SendEnv LANG LC_CTYPE LC_NUMERIC LC_TIME LC_COLLATE LC_MONETARY LC_MESSAGES
+        SendEnv LC_PAPER LC_NAME LC_ADDRESS LC_TELEPHONE LC_MEASUREMENT
+        SendEnv LC_IDENTIFICATION LC_ALL LANGUAGE
+        SendEnv XMODIFIERS
+  /etc/ssh/sshd_config:
+    mode: '0600'
+    validate_cmd: '/usr/sbin/sshd -tf %'
+    content: |
+      HostKey /etc/ssh/ssh_host_rsa_key
+      HostKey /etc/ssh/ssh_host_ecdsa_key
+      HostKey /etc/ssh/ssh_host_ed25519_key
+      SyslogFacility AUTHPRIV
+      AuthorizedKeysFile      .ssh/authorized_keys
+      PasswordAuthentication yes
+      ChallengeResponseAuthentication no
+      GSSAPIAuthentication yes
+      GSSAPICleanupCredentials no
+      UsePAM yes
+      X11Forwarding yes
+      PrintMotd No
+      AcceptEnv LANG LC_CTYPE LC_NUMERIC LC_TIME LC_COLLATE LC_MONETARY LC_MESSAGES
+      AcceptEnv LC_PAPER LC_NAME LC_ADDRESS LC_TELEPHONE LC_MEASUREMENT
+      AcceptEnv LC_IDENTIFICATION LC_ALL LANGUAGE
+      AcceptEnv XMODIFIERS
+      Subsystem       sftp    /usr/libexec/openssh/sftp-server
+  /etc/idmapd.conf:
+    content: |
+      ## FILE MANAGED BY PUPPET
+      [General]
+      Domain = %{lookup('AD_DOMAIN')}
+  /etc/nsswitch.conf:
+    content: |
+      ## FILE MANAGED BY PUPPET
+      
+      # Users and groups
+      passwd:    files sss systemd
+      shadow:    files sss
+      group:     files sss systemd
+      
+      # Hosts
+      hosts:    files dns myhostname
+      
+      # Misc services
+      aliases:      files
+      automount:    files
+      bootparams:   files
+      ethers:       files
+      netgroup:     files
+      netmasks:     files
+      networks:     files
+      protocols:    files
+      publickey:    files
+      rpc:          files
+      services:     files
+  /etc/chrony.conf:
+    mode: '0640'
+    require:
+      - 'Package[chrony]'
+    content: |
+      ## FILE MANAGED BY PUPPET
+      server %{lookup('NTP_SERVER1')} version 4 iburst maxpoll 10 key %{lookup('NTP_KEY_INDEX')}
+      server %{lookup('NTP_SERVER2')} version 4 iburst maxpoll 10 key %{lookup('NTP_KEY_INDEX')}
+      driftfile /var/lib/chrony/drift
+      makestep 10 3
+      rtcsync
+      stratumweight 0
+      bindcmdaddress 127.0.0.1
+      bindcmdaddress ::1
+      keyfile /etc/chrony.keys
+      # noclientlog
+      logchange 0.5
+      logdir /var/log/chrony
+  /etc/chrony.keys:
+    mode: '0600'
+    require:
+      - 'Package[chrony]'
+    content: |
+      ## FILE MANAGED BY PUPPET
+      %{lookup('NTP_KEY_INDEX')} %{lookup('NTP_KEY_TYPE')} %{lookup('NTP_KEY')}
+  /etc/krb5.conf:
+    require:
+      - 'Package[krb5-workstation]'
+    content: |
+      ## FILE MANAGED BY PUPPET
+      includedir /etc/krb5.conf.d/
+      includedir /var/lib/sss/pubconf/krb5.include.d/
+      
+      [libdefaults]
+        default_ccache_name = KEYRING:persistent:%%{}{uid}
+        default_realm = %{lookup('KERBEROS_REALM')}
+        allow_weak_crypto = false
+        dns_lookup_realm = true
+        dns_lookup_kdc = true
+        ticket_lifetime = 24h
+        renew_lifetime = 7d
+        rdns = false
+        forwardable = yes
+  /etc/sssd/conf.d:
+    ensure: 'directory'
+    owner: 'sssd'
+    group: 'sssd'
+    mode: '0711'
+    purge: true
+    recurse: true
+    require:
+      - 'Package[sssd]'
+  /etc/sssd/sssd.conf:
+    mode: '0600'
+    require:
+      - 'Package[sssd]'
+    content: |
+      ## FILE MANAGED BY PUPPET
+      [sssd]
+      config_file_version = 2
+      services = nss, pam, ssh
+      domains = %{lookup('AD_DOMAIN')}
+      
+      [nss]
+      default_shell = /bin/bash
+      shell_fallback = /bin/bash
+      fallback_homedir = /home/%u
+      
+      [domain/%{lookup('AD_DOMAIN')}]
+      id_provider = ad
+      access_provider = ad
+      auth_provider = ad
+      chpass_provider = ad
+      ad_domain = %{lookup('AD_DOMAIN')}
+      ldap_id_mapping = False
+      use_fully_qualified_names = False
+      cache_credentials = True
+      ad_gpo_access_control = enforcing
+      ad_gpo_ignore_unreadable = True
+      enumerate = True
+      dyndns_update = True
+  /etc/profile.d/kerberos.sh:
+    content: |
+      ## FILE MANAGED BY PUPPET
+      
+      # Apply only to login shells
+      shopt -q login_shell || return
+      
+      # Exit if no Kerberos ticket is present
+      klist -s || return
+      
+      # Background job to renew Kerberos ticket every 2 hours
+      while klist -s ; do sleep 2h ; kinit -R ; done 2>/dev/null &
+      
+      # Function to kill RENEW_TGT and clean up credential cache
+      cleanup_krb5cc() {
+        # Kill the Kerberos ticket renewal job
+        kill %?'while klist -s'
+        
+        # This runs in a separate shell itself, so cleanup when #shells = 2
+        [[ $(pgrep -c -u ${LOGNAME} $(basename ${SHELL})) -eq 2 ]] && kdestroy -A
+      }
+      
+      # Call the cleanup_krb5cc function when the shell exits
+      trap cleanup_krb5cc EXIT 
+  /etc/samba/smb.conf:
+    mode: '0600'
+    require:
+      - 'Package[samba-common]'
+    content: |
+      ## FILE MANAGED BY PUPPET
+       
+      [global]
+        security = ads
+        server string = %h server
+        client use spnego = yes
+        kerberos method = system keytab
+        client signing = yes
+        server signing = required
+        acl allow execute always = yes
+        lanman auth = no
+        ntlm auth = no
+        min protocol = smb2
+        client ntlmv2 auth = yes
+        idmap config * : unix_nss_info = tdb
+        idmap config * : backend = tdb
+        idmap config * : range = 1200000-1299999
+        log file = /var/log/samba/%m.log
+        workgroup = %{lookup('SAMBA_WORKGROUP')}
+        realm = %{lookup('KERBEROS_REALM')}
+  /etc/auto.master:
+    notify: 'Service[autofs]'
+    content: |
+      # FILE MANAGED BY PUPPET
+      /home/nfs /etc/auto.home --timeout 900
+      /- /etc/auto.direct
+  /etc/auto.home:
+    notify: 'Service[autofs]'
+    content: "%{lookup('AUTOFS_HOME')}"
+  /etc/auto.direct:
+    notify: 'Service[autofs]'
+    content: "%{lookup('AUTOFS_DIRECT')}"
+
+
+types::exec_defaults:
+  path: '/sbin:/usr/sbin:/bin:/usr/bin'
+
+types::exec:
+  selinux_enforcing:
+    command: 'setenforce Enforcing'
+    unless: 'test "$(getenforce)" == "Enforcing"'
+    require:
+      - 'Package[selinux-policy]'
+  net_ads_join:
+    provider: 'shell'
+    command: "kinit -kt /etc/adj.kt %{lookup('ADJOIN_USER')} ; net ads join createcomputer='%{AD_OU}' -k"
+    unless: 'net ads testjoin'
+    require:
+      - 'File[/etc/adj.kt]'
+      - 'File[/etc/krb5.conf]'
+      - 'File[/etc/samba/smb.conf]'
+      - 'Package[samba-common-tools]'
+    notify:
+      - 'Service[sssd]'
+    environment:
+      - 'LOGNAME=root'
+      - 'USER=root'
+      - 'HOME=/root'
+
+
+
+types::service_defaults:
+  ensure: 'running'
+  enable: true
+
+types::service:
+  systemd-resolved: {}
+  sshd:
+    require: 'Package[openssh-server]'
+    subscribe: 'File[/etc/ssh/sshd_config]'
+  sssd:
+    require: 'Package[sssd]'
+    subscribe: 'File[/etc/sssd/sssd.conf]'
+  nfs-idmapd:
+    require: 'Package[nfs-utils]'
+    subscribe: 'File[/etc/idmapd.conf]'
+  rpc-gssd:
+    require: 'Package[nfs-utils]'
+  gssproxy:
+    require: 'Package[nfs-utils]'
+  chronyd:
+    require: 'Package[chrony]'
+    subscribe:
+      - 'File[/etc/chrony.conf]'
+      - 'File[/etc/chrony.keys]'
+  postfix:
+    require: 'Package[postfix]'
+  autofs:
+    require: 'Package[autofs]'
+
+
+types::ini_setting_defaults:
+  ensure: present
+
+types::ini_setting:
+  'ini_setting resolved.conf Domains':
+    path: '/etc/systemd/resolved.conf'
+    section: 'Resolve'
+    setting: 'Domains'
+    value: "%{lookup('AD_DOMAIN')}"
+    notify: 'Service[systemd-resolved]'
+  'ini_setting resolved.conf DNS':
+    path: '/etc/systemd/resolved.conf'
+    section: 'Resolve'
+    setting: 'DNS'
+    value: "%{lookup('DNS_SERVERS')}"
+    notify: 'Service[systemd-resolved]'
+  'ini_setting resolved.conf MulticastDNS':
+    path: '/etc/systemd/resolved.conf'
+    section: 'Resolve'
+    setting: 'MulticastDNS'
+    value: 'no'
+    notify: 'Service[systemd-resolved]'
+

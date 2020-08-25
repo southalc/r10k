@@ -1,0 +1,16 @@
+---
+version: 5
+defaults:
+  datadir: data
+  data_hash: yaml_data
+
+hierarchy:
+  - name: "Configuration management hierarchy"
+    paths:
+      - "nodes/%{trusted.certname}.yaml"            # Node specific data
+      - "site.yaml"                                 # Site sensitive data (.gitignore)
+      - "roles/%{role}.yaml"                        # Role specific data
+      - "platform/%{kernel}-%{virtual}.yaml"        # Virtual platform overrides
+      - "os/%{os.name}-%{os.release.major}.yaml"    # OS specific name and version
+      - "os/%{kernel}.yaml"                         # Separate Windows and Linux
+      - "common.yaml"                               # Common to all nodes
