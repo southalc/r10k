@@ -11,13 +11,13 @@ repositories like `git`.  This enables configuration management of both Puppet m
 in the source git repository.  This enables a flexible way to create new environments for testing and merge tested changes into production environments using typical git workflows.
 
 This control repository includes a hiera hierachy and example data files to perform all node configuration by leveraging the [types module](https://forge.puppet.com/southalc/types)
-to avoid writing any actual Puppet code.  This design provides a standard configuration based on operating system version, with the ability to override data as needed for specific
-nodes or deployment platforms.  Applications are deployed by assigning the `role` variable either through site manifests or through an [ENC](https://puppet.com/docs/puppet/latest/nodes_external.html).
+to avoid writing any Puppet code.  This design provides a standard configuration based on operating system version with the ability to override data as needed for specific nodes
+or deployment platforms.  Applications can be assigned using the `role` variable either through site manifests or through an [ENC](https://github.com/southalc/enc).
 
-Defining roles this way is counter to the common [roles/profiles](https://puppet.com/docs/pe/2019.8/roles_and_profiles_example.html) module.  A purported advantage of the
-roles/profiles design is the ability to assign multiple profiles to a more complex server role.  This may have made sense years ago, but the typical server today is virtualized
-and dedicated to running a single application.  I've found it to be very effective to construct a standard operating system configuration coupled with an application role all
-defined entirely in hiera data without resorting to writing any actual Puppet code.
+Defining roles this way is counter to the common [roles/profiles](https://puppet.com/docs/pe/2019.8/roles_and_profiles_example.html) method.  A purported advantage of the
+roles/profiles design is the ability to assign multiple profiles to compose a more complex server role.  This may have made sense years ago, but I've found that the typical server
+today is virtualized and dedicated to running a single application.  The approach of applying a standard OS baseline with a single application role has proven to be very effective
+and enables the entire configuration to be easily managed almost entirely from hiera YAML files.
 
 ## Setup
 First, create a new git repository to serve as your control repository for Puppet.  This can be on any git server either on-prem or cloud hosted.  Clone this git repository to a
@@ -26,7 +26,7 @@ local working directory, remove the origin, add your new repository as the origi
 git clone https://github.com/southalc/r10k.git
 git remote remove origin 
 git remote add origin <URL_TO_YOUR_NEW_GIT_REPO>
-git push origin production
+git push -u origin production
 
 ```
 Once you have your own control repository established, configure your Puppet server to use it with r10k.  Install 'r10k' on the Puppet master using Ruby Gems from the runtime
@@ -64,9 +64,14 @@ for ENVIRONMENT in $(ls ${ENVIRONMENTS})
   [[ -d ${HIERADATA} ]] && cp -p "${SITE_YAML}" "${HIERADATA}"
 done
 ```
-Set proper permissions and ownership on the r10k configuration file and postrun script:
+The `postrun` script copies a `site.yaml` file from the r10k directory to each deployed environment.  This allows us to separate out site-specific, security sensitive data like
+password hashes, network configuration, and Active Directory keytabs and prevent them from being pushed to public git servers.  Copy the included `site.yaml` file from this
+repository to your r10k directory and update the values for your deployment, using the descriptions provided in the `site.yaml` example file.
+
+Set proper permissions and ownership on the r10k configuration file, postrun script, and site.yaml:
 ```
-chown root:puppet /etc/puppetlabs/r10k/r10k.yaml /etc/puppetlabs/r10k/postrun.sh
+chown root:puppet /etc/puppetlabs/r10k/r10k.yaml /etc/puppetlabs/r10k/postrun.sh /etc/puppetlabs/r10k/site.yaml
+chmod 640 /etc/puppetlabs/r10k/site.yaml
 chmod 644 /etc/puppetlabs/r10k/r10k.yaml
 chmod 750 /etc/puppetlabs/r10k/postrun.sh
 ```
@@ -86,7 +91,7 @@ classes is performed, enabling the role to be used within the hiera hierarchy.
 
 Hiera provides a back-end data service for Puppet.  The `hiera.yaml` file defines the order in which Puppet will search data files.  Data files are stored in the `data`
 subdirectory as common YAML files.  Variables can be referenced in the hiera configuration indicated by the percent sign and curly braces.  Variables are either facts as provided
-by the node, or variables assigned by either the [main manifest](https://puppet.com/docs/puppet/latest/dirs_manifest.html) or an [External Node Classifier](https://puppet.com/docs/puppet/latest/nodes_external.html).
+by the node, or variables assigned by either the [main manifest](https://puppet.com/docs/puppet/latest/dirs_manifest.html) or an [External Node Classifier](https://github.com/southalc/enc).
 
 Modules are added to environments through the [Puppetfile](https://puppet.com/docs/pe/latest/puppetfile.html).  Modules in the Puppetfile typically come from Puppet Forge, but
 can also come directly from git repositories.  This control repository incudes a Puppetfile with all the modules needed to apply the resources defined in the hiera data files.
