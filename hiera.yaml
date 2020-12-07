@@ -5,12 +5,23 @@ defaults:
   data_hash: yaml_data
 
 hierarchy:
-  - name: "Configuration management hierarchy"
+  - name: "Node specific and site general data"
     paths:
-      - "nodes/%{trusted.certname}.yaml"            # Node specific data
-      - "site.yaml"                                 # Site sensitive data (.gitignore)
-      - "roles/%{role}.yaml"                        # Role specific data
-      - "platform/%{kernel}-%{virtual}.yaml"        # Virtual platform overrides
-      - "os/%{os.name}-%{os.release.major}.yaml"    # OS specific name and version
-      - "os/%{kernel}.yaml"                         # Separate Windows and Linux
-      - "common.yaml"                               # Common to all nodes
+      - "nodes/%{trusted.certname}.yaml"         # Node specific data
+      - "site.yaml"                              # Site sensitive (.gitignore)
+  - name: "Containers from ENC assigned variables"
+    mapped_paths:
+      - containers
+      - container
+      - "containers/%{container}.yaml"
+  - name: "Roles from ENC assigned variables"
+    mapped_paths:
+      - roles
+      - role
+      - "roles/%{role}.yaml"
+  - name: "General platform and OS data"
+    paths:
+      - "platform/%{kernel}-%{virtual}.yaml"     # Platform specific
+      - "os/%{os.name}-%{os.release.major}.yaml" # OS specific name and version
+      - "os/%{kernel}.yaml"                      # Separate Windows and Linux
+

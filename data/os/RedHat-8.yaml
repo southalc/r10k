@@ -1,12 +1,15 @@
 ---
 # Configuration for RedHat 8
+# 'Exec' resources available for reference elsewhere:
+#   - systemctl_daemon_reload
+#   - firewalld_reload
 
 types::types:
-  - 'concat_file'
-  - 'concat_fragment'
-  - 'firewalld_ipset'
-  - 'ini_setting'
-#  - 'certs::cacerts'
+  - concat_file
+  - concat_fragment
+  - firewalld_service
+  - ini_setting
+  - mailalias
 
 
 types::package_defaults:
@@ -40,7 +43,7 @@ types::file:
       This system is managed with the basic puppet module
   /etc/pam.d/system-auth:
     content: |
-      ## FILE MANAGED BY PUPPET
+      # %{lookup('FILE_HEADER')}
       auth        required                                     pam_env.so
       auth        required                                     pam_faildelay.so delay=2000000
       auth        [default=1 ignore=ignore success=ok]         pam_succeed_if.so uid >= 1000 quiet
@@ -72,7 +75,7 @@ types::file:
       session     optional                                     pam_sss.so
   /etc/pam.d/password-auth:
     content: |
-      ## FILE MANAGED BY PUPPET
+      # %{lookup('FILE_HEADER')}
       auth        required                                     pam_env.so
       auth        required                                     pam_faildelay.so delay=2000000
       auth        [default=1 ignore=ignore success=ok]         pam_succeed_if.so uid >= 1000 quiet
@@ -104,7 +107,7 @@ types::file:
       session     optional                                     pam_sss.so
   /etc/ssh/ssh_config:
     content: |
-      # FILE MANAGED BY PUPPET
+      # %{lookup('FILE_HEADER')}
       
       # Follow system-wide Crypto Policy, if defined:
       Include /etc/crypto-policies/back-ends/openssh.config
@@ -117,7 +120,7 @@ types::file:
     recurse: true
   /etc/ssh/ssh_config.d/05-default.conf:
     content: |
-      # FILE MANAGED BY PUPPET
+      # %{lookup('FILE_HEADER')}
       
       Host *
         GSSAPIAuthentication yes
@@ -149,12 +152,12 @@ types::file:
       Subsystem       sftp    /usr/libexec/openssh/sftp-server
   /etc/idmapd.conf:
     content: |
-      ## FILE MANAGED BY PUPPET
+      # %{lookup('FILE_HEADER')}
       [General]
       Domain = %{lookup('AD_DOMAIN')}
   /etc/nsswitch.conf:
     content: |
-      ## FILE MANAGED BY PUPPET
+      # %{lookup('FILE_HEADER')}
       
       # Users and groups
       passwd:    files sss systemd
@@ -181,7 +184,7 @@ types::file:
     require:
       - 'Package[chrony]'
     content: |
-      ## FILE MANAGED BY PUPPET
+      # %{lookup('FILE_HEADER')}
       server %{lookup('NTP_SERVER1')} version 4 iburst maxpoll 10 key %{lookup('NTP_KEY_INDEX')}
       server %{lookup('NTP_SERVER2')} version 4 iburst maxpoll 10 key %{lookup('NTP_KEY_INDEX')}
       driftfile /var/lib/chrony/drift
@@ -199,15 +202,14 @@ types::file:
     require:
       - 'Package[chrony]'
     content: |
-      ## FILE MANAGED BY PUPPET
+      # %{lookup('FILE_HEADER')}
       %{lookup('NTP_KEY_INDEX')} %{lookup('NTP_KEY_TYPE')} %{lookup('NTP_KEY')}
   /etc/krb5.conf:
     require:
       - 'Package[krb5-workstation]'
     content: |
-      ## FILE MANAGED BY PUPPET
+      # %{lookup('FILE_HEADER')}
       includedir /etc/krb5.conf.d/
-      includedir /var/lib/sss/pubconf/krb5.include.d/
       
       [libdefaults]
         default_ccache_name = KEYRING:persistent:%%{}{uid}
@@ -223,7 +225,7 @@ types::file:
     ensure: 'directory'
     owner: 'sssd'
     group: 'sssd'
-    mode: '0711'
+    mode: '0700'
     purge: true
     recurse: true
     require:
@@ -233,7 +235,7 @@ types::file:
     require:
       - 'Package[sssd]'
     content: |
-      ## FILE MANAGED BY PUPPET
+      # %{lookup('FILE_HEADER')}
       [sssd]
       config_file_version = 2
       services = nss, pam, ssh
@@ -259,7 +261,7 @@ types::file:
       dyndns_update = True
   /etc/profile.d/kerberos.sh:
     content: |
-      ## FILE MANAGED BY PUPPET
+      # %{lookup('FILE_HEADER')}
       
       # Apply only to login shells
       shopt -q login_shell || return
@@ -286,7 +288,7 @@ types::file:
     require:
       - 'Package[samba-common]'
     content: |
-      ## FILE MANAGED BY PUPPET
+      # %{lookup('FILE_HEADER')}
        
       [global]
         security = ads
@@ -309,15 +311,29 @@ types::file:
   /etc/auto.master:
     notify: 'Service[autofs]'
     content: |
-      # FILE MANAGED BY PUPPET
+      # %{lookup('FILE_HEADER')}
       /home/nfs /etc/auto.home --timeout 900
       /- /etc/auto.direct
   /etc/auto.home:
     notify: 'Service[autofs]'
-    content: "%{lookup('AUTOFS_HOME')}"
+    content: |
+      # %{lookup('FILE_HEADER')}
+      %{lookup('AUTOFS_HOME')}
   /etc/auto.direct:
     notify: 'Service[autofs]'
     content: "%{lookup('AUTOFS_DIRECT')}"
+  /etc/sudoers.d/admins:
+    mode: '0440'
+    validate_cmd: '/usr/sbin/visudo -c -f %'
+    content: |
+      # %{lookup('FILE_HEADER')}
+      %{lookup('SUDO_ADMINS')} %{hostname} = (root) NOPASSWD: ALL
+  /etc/rsyslog.d/90-remote:
+    notify: Service[rsyslog]
+    content: |
+      # %{lookup('FILE_HEADER')}
+      # Log everything to the remote SYSLOG_HOST
+      *.* @@%{lookup('SYSLOG_HOST')}:514
 
 
 types::exec_defaults:
@@ -331,7 +347,7 @@ types::exec:
       - 'Package[selinux-policy]'
   net_ads_join:
     provider: 'shell'
-    command: "kinit -kt /etc/adj.kt %{lookup('ADJOIN_USER')} ; net ads join createcomputer='%{AD_OU}' -k"
+    command: "kinit -kt /etc/adj.kt %{lookup('ADJOIN_USER')} ; net ads join \"createcomputer=%{lookup('AD_OU')}\" -k"
     unless: 'net ads testjoin'
     require:
       - 'File[/etc/adj.kt]'
@@ -339,12 +355,27 @@ types::exec:
       - 'File[/etc/samba/smb.conf]'
       - 'Package[samba-common-tools]'
     notify:
-      - 'Service[sssd]'
+      - Service[sssd]
+      - Service[gssproxy]
+      - Service[rpc-gssd]
     environment:
       - 'LOGNAME=root'
       - 'USER=root'
       - 'HOME=/root'
+  systemctl_daemon_reload:
+    command: systemctl daemon-reload
+    refreshonly: true
+  firewalld_reload:
+    command: firewall-cmd --reload
+    refreshonly: true
 
+
+types::firewalld_service:
+  disable_cockpit:
+    ensure: absent
+    service: cockpit
+    notify:
+      - Exec[firewalld_reload]
 
 
 types::service_defaults:
@@ -352,6 +383,7 @@ types::service_defaults:
   enable: true
 
 types::service:
+  rsyslog: {}
   systemd-resolved: {}
   sshd:
     require: 'Package[openssh-server]'
@@ -361,11 +393,17 @@ types::service:
     subscribe: 'File[/etc/sssd/sssd.conf]'
   nfs-idmapd:
     require: 'Package[nfs-utils]'
-    subscribe: 'File[/etc/idmapd.conf]'
+    subscribe:
+      - File[/etc/idmapd.conf]
+      - File[/etc/krb5.conf]
   rpc-gssd:
-    require: 'Package[nfs-utils]'
+    require:
+      - Package[nfs-utils]
+      - File[/etc/krb5.conf]
   gssproxy:
-    require: 'Package[nfs-utils]'
+    require:
+      - Package[nfs-utils]
+      - File[/etc/krb5.conf]
   chronyd:
     require: 'Package[chrony]'
     subscribe:
@@ -375,6 +413,29 @@ types::service:
     require: 'Package[postfix]'
   autofs:
     require: 'Package[autofs]'
+
+
+types::mailalias:
+  root:
+    recipient: "%{lookup('ADMIN_EMAIL')}"
+
+
+types::file_line_defaults:
+  ensure: 'present'
+
+types::file_line:
+  postfix_relayhost:
+    path: '/etc/postfix/main.cf'
+    line: "relayhost = [%{lookup('SMTP_RELAY')}]"
+    match: '^relayhost ='
+    notify: 'Service[postfix]'
+    require: 'Package[postfix]'
+  postfix_smtpd_client_restrictions:
+    path: '/etc/postfix/main.cf'
+    line: 'smtpd_client_restrictions = permit_mynetworks,reject'
+    match: '^smtpd_client_restrictions ='
+    notify: 'Service[postfix]'
+    require: 'Package[postfix]'
 
 
 types::ini_setting_defaults:

@@ -9,6 +9,10 @@
 #   grub2-mkpasswd-pbkdf2
 #############################################################################################
 
+# Classes assigned to all nodes
+classes:
+  - 'types'
+
 SAMBA_WORKGROUP: 'uppercase NETBIOS domain name'
 AD_DOMAIN: 'lowercase DNS domain name'
 KERBEROS_REALM: 'uppercase DNS domain name'
@@ -40,4 +44,7 @@ ROOT_K5LOGIN: 'array of Kerberos principals that will be permitted to assume roo
 EPO_SERVERS: '[array_of_McAfee_ePO_servers]'
 
 ROOT_PASSWORD_HASH: 'generate password hash per above example'
+
+# File header used on all common files managed by Puppet
+FILE_HEADER: 'FILE MANAGED BY PUPPET'
 

@@ -1,0 +1,62 @@
+---
+# Hiera based role for redis container deployment
+
+classes:
+  - types
+  - podman
+
+types::user:
+  redis:
+    ensure: present
+    forcelocal: true
+    uid:  222002
+    gid:  222002
+    password: '!!'
+    home: /home/redis
+    
+types::group:
+  redis:
+    ensure: present
+    forcelocal: true
+    gid:  222002
+
+types::file:
+  /home/redis:
+    ensure: directory
+    owner: 222002
+    group: 222002
+    mode: '0700'
+    require: 'User[redis]'
+  /home/redis/data:
+    ensure: directory
+    selinux_ignore_defaults: true
+    owner: 12400000
+    group: 12400000
+    mode: '0700'
+
+podman::manage_subuid: true
+podman::subid:
+  '222002':
+    subuid: 12400000
+    count: 65535
+
+podman::volumes:
+  redis:
+    user: redis
+    ensure: absent
+
+podman::containers:
+  redis:
+    user: redis
+    image: 'docker.io/redis:latest'
+    flags:
+      label:
+        - purpose=dev
+      publish:
+        - '6379:6379'
+      volume: '/home/redis/data:/data:Z'
+    service_flags:
+      timeout: '60'
+    require:
+      - File[/home/redis/data]
+

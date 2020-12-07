@@ -1,6 +1,0 @@
----
-# Resources common to all nodes
-
-classes:
-  - 'types'
-

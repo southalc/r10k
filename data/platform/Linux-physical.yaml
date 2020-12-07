@@ -17,7 +17,6 @@ types::augeas:
   libvirt_group_members:
     context: '/files/etc/group/libvirt'
     changes:
-      - 'set user[1] frex'
       - 'set user[2] chris'
     incl: '/etc/group'
     lens: 'Group.lns'

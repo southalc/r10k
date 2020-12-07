@@ -1,0 +1,132 @@
+---
+# Configure Hashicorp Vault to run as a service
+
+classes:
+  - types
+  - firewalld
+
+types::types:
+  - archive
+  - firewalld_port
+
+types::user:
+  vault:
+    ensure: present
+    comment: Service account for Vault
+    forcelocal: true
+    home: /opt/vault
+    managehome: true
+    purge_ssh_keys: true
+    shell: /usr/bin/false
+    system: true
+    gid: vault
+    password: '!!'
+
+types::group:
+  vault:
+    ensure: present
+    forcelocal: true
+    system: true
+
+types::file:
+  /etc/systemd/system/vault.service:
+    ensure: file
+    owner: root
+    group: root
+    mode: '0644'
+    require:
+      - User[vault]
+      - File[/etc/vault/vault.hcl]
+      - Archive[vault]
+    notify:
+      - Exec[systemctl_daemon_reload]
+    content: |
+      [Unit]
+      Description=Vault secret management
+      Requires=network-online.target
+      After=network-online.target
+      
+      [Service]
+      User=vault
+      Group=vault
+      PIDFile=/var/run/vault/vault.pid
+      ExecStart=/usr/local/bin/vault server -config=/etc/vault/vault.hcl -log-level=debug
+      ExecReload=/bin/kill -HUP $MAINPID
+      KillMode=process
+      KillSignal=SIGTERM
+      Restart=on-failure
+      RestartSec=42s
+      LimitMEMLOCK=infinity
+      
+      [Install]
+      WantedBy=multi-user.target
+  /opt/vault:
+    ensure: directory
+    owner: vault
+    group: vault
+    mode: '0700'
+    require:
+      - User[vault]
+  /etc/vault:
+    ensure: directory
+    owner: root
+    group: vault
+    mode: '0750'
+    require:
+      - User[vault]
+  /etc/vault/vault.hcl:
+    ensure: file
+    owner: root
+    group: vault
+    mode: '0640'
+    content: |
+      storage "raft" {
+        path    = "/opt/vault"
+        node_id = "n1"
+      }
+      listener "tcp" {
+        address     = "0.0.0.0:8200"
+        tls_disable = 0
+        tls_cert_file = "/etc/vault/vault.pem"
+        tls_key_file = "/etc/vault/vault.key"
+      }
+      api_addr = "https://%{::networking.ip}:8200"
+      cluster_addr = "https://%{::networking.ip}:8201"
+      ui = true
+
+
+types::service:
+  vault:
+    ensure: running
+    enable: true
+    require:
+      - File[/opt/vault]
+      - Archive[vault]
+    subscribe:
+      - File[/etc/vault/vault.hcl]
+
+types::package:
+  unzip:
+    ensure: installed
+
+
+types::archive:
+  vault:
+    ensure: present
+    path: /tmp/vault.zip
+    source: "https://releases.hashicorp.com/vault/1.6.0/vault_1.6.0_linux_amd64.zip"
+    extract: true
+    extract_path: /usr/local/bin
+    creates: /usr/local/bin/vault
+    require:
+      - Package[unzip]
+
+
+types::firewalld_port:
+  vault:
+    ensure: present
+    port: 8200
+    protocol: tcp
+    notify:
+      - Exec[firewalld_reload]
+

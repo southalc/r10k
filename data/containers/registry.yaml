@@ -1,0 +1,77 @@
+---
+# Docker registry container under podman
+
+classes:
+  - types
+  - podman
+
+types::user:
+  registry:
+    ensure: present
+    forcelocal: true
+    uid:  222005
+    gid:  222005
+    password: '!!'
+    home: /home/registry
+    
+types::group:
+  registry:
+    ensure: present
+    forcelocal: true
+    gid:  222005
+
+types::file:
+  /home/registry:
+    ensure: directory
+    owner: 222005
+    group: 222005
+    mode: '0700'
+    require: 'User[registry]'
+  /home/registry/data:
+    ensure: directory
+    selinux_ignore_defaults: true
+    owner: 12500000
+    group: 12500000
+    mode: '0750'
+  "%{lookup('TRAEFIK_DYNAMIC')}/registry.yaml":
+    ensure: file
+    selinux_ignore_defaults: true
+    owner: root
+    group: root
+    mode: '0640'
+    content: |
+      # FILE MANAGED BY PUPPET
+      # - Dynamic Traefik configuration file for Docker registry container
+      http:
+        routers:
+          registry-router:
+            entrypoints: https
+            tls: true
+            rule: "Host(`%{::fqdn}`) && (PathPrefix(`/registry`))" 
+            service: "registry"
+            #middlewares: "some-auth"
+        services:
+          registry:
+            loadBalancer:
+              servers:
+                # Match the published port from the container flags
+                - url: "http://%{::fqdn}:5000/"
+
+podman::manage_subuid: true
+podman::subid:
+  '222005':
+    subuid: 12500000
+    count: 65535
+
+podman::containers:
+  registry:
+    user: registry
+    image: 'registry:latest'
+    flags:
+      restart: always
+      volume: /home/registry/data:/var/lib/registry:Z
+      env:
+        - REGISTRY_HTTP_PREFIX=/registry/
+        - REGISTRY_HTTP_ADDR=0.0.0.0:5000
+      publish: '5000:5000'
+

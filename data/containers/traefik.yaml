@@ -1,0 +1,151 @@
+---
+# Hiera based role for Traefik container deployment creates:
+# - Directories '/opt/traefik/{dynamic|ssl|logs}' and files '/opt/traefik/logs' and '/opt/traefik/traefik.yaml'
+# - SSL certificate and private key files under '/opt/traefik/ssl'
+# - Container 'traefik' publishing standard ports 80 and 443
+# - Traefik configuration redirects http requests to https
+# - Use global variable "TRAEFIK_DYNAMIC" ('/opt/traefik/dynamic') to reference dynamic rules directory
+# - Traefik monitors "TRAEFIK_DYNAMIC" directory for changes to rule files, bind mounted to '/etc/traefik'
+# - Additional containers can add thier own dynamic rule files and traefik will automatically update
+# - Firewall rules to permit http/https services
+# - Systemd service 'podman-traefik'
+# - Use traefik as the SSL endpoint for all containers 
+
+classes:
+  - types
+  - podman
+  - firewalld
+
+types::types:
+  - firewalld_rich_rule
+  - firewalld_service
+
+types::binary:
+  /opt/traefik/ssl/cert.pem:
+    ensure: file
+    selinux_ignore_defaults: true
+    mode: '0644'
+    content: "%{lookup('PODMAN_CERT')}"
+  /opt/traefik/ssl/cert.key:
+    ensure: file
+    selinux_ignore_defaults: true
+    mode: '0400'
+    content: "%{lookup('PODMAN_KEY')}"
+
+types::file:
+  /opt/traefik:
+    ensure: directory
+    selinux_ignore_defaults: true
+    mode: '0700'
+  /opt/traefik/dynamic:
+    ensure: directory
+    selinux_ignore_defaults: true
+    mode: '0700'
+  /opt/traefik/ssl:
+    ensure: directory
+    selinux_ignore_defaults: true
+    mode: '0700'
+  /opt/traefik/logs:
+    ensure: directory
+    selinux_ignore_defaults: true
+    mode: '0700'
+  /opt/traefik/traefik.yaml:
+    ensure: file
+    selinux_ignore_defaults: true
+    mode: '0640'
+    content: |
+      # FILE MANAGED BY PUPPET
+      # Static Traefik configuration - add dynamic files under 'dynamic/'
+      global:
+        checkNewVersion: false
+        sendAnonymousUsage: false
+      # Default log level is ERROR (DEBUG, PANIC, FATAL, ERROR, WARN, INFO)
+      log:
+        level: INFO
+        filePath: /etc/traefik/logs/traefik.log
+      # Enable access to the dashboard
+      api:
+        insecure: false
+        dashboard: true
+      # Firewall rules must be open for the entry ports
+      entryPoints:
+        http:
+          address: ":80"
+          http:
+            redirections:
+              entryPoint:
+                to: https
+                scheme: https
+        https:
+          address: ":443"
+      defaultEntryPoints:
+        - entryPoints.http
+        - entryPoints.https
+      providers:
+        file:
+          directory: /etc/traefik/dynamic
+          watch: true
+    notify:
+      - Service[podman-traefik]
+  /opt/traefik/logs/traefik.log:
+    ensure: file
+    selinux_ignore_defaults: true
+    mode: '0640'
+  "%{lookup('TRAEFIK_DYNAMIC')}/certs.yaml":
+    ensure: file
+    selinux_ignore_defaults: true
+    mode: '0640'
+    content: |
+      # FILE MANAGED BY PUPPET
+      # Default certificates for Traefik
+      tls:
+        certificates:
+          certFile: /etc/traefik/ssl/cert.pem
+          keyFile: /etc/traefik/ssl/cert.key
+        stores:
+          default:
+            defaultCertificate:
+              certFile: /etc/traefik/ssl/cert.pem
+              keyFile: /etc/traefik/ssl/cert.key
+        options:
+          default:
+            minVersion: VersionTLS12
+  "%{lookup('TRAEFIK_DYNAMIC')}/dashboard.yaml":
+    ensure: file
+    selinux_ignore_defaults: true
+    mode: '0640'
+    content: |
+      # FILE MANAGED BY PUPPET
+      # - Enable Traefik dashboard through https entrypoint
+      http:
+        routers:
+          dashboard-router:
+            entrypoints: https
+            # Will use certificate from the default store
+            tls: true
+            rule: "Host(`%{::fqdn}`) && (PathPrefix(`/api`) || PathPrefix(`/dashboard`))"
+            service: "api@internal"
+            #middlewares: "some-auth"
+
+podman::containers:
+  traefik:
+    image: 'docker.io/traefik:latest'
+    flags:
+      label:
+        - purpose=dev
+      publish:
+        - '80:80'
+        - '443:443'
+      # The trailing ':Z' re-labels the SELinux context for container access
+      volume: '/opt/traefik:/etc/traefik:Z'
+    service_flags:
+      timeout: '60'
+
+types::firewalld_service:
+  http:
+    ensure: present
+    zone: public
+  https:
+    ensure: present
+    zone: public
+

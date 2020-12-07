@@ -1,0 +1,94 @@
+---
+# Hiera based role for rootless Apache httpd container
+
+classes:
+  - types
+  - podman
+
+types::user:
+  apache:
+    ensure: present
+    forcelocal: true
+    uid:  222006
+    gid:  222006
+    password: '!!'
+    home: /home/apache
+    
+types::group:
+  apache:
+    ensure: present
+    forcelocal: true
+    gid:  222006
+
+types::file:
+  /home/apache:
+    ensure: directory
+    owner: 222006
+    group: 222006
+    mode: '0700'
+    require: 'User[apache]'
+  /home/apache/data:
+    ensure: directory
+    selinux_ignore_defaults: true
+    owner: 12600000
+    group: 12600000
+    mode: '0750'
+  /home/apache/data/web:
+    ensure: directory
+    selinux_ignore_defaults: true
+    owner: 12600000
+    group: 12600000
+    mode: '0750'
+  /home/apache/data/README:
+    ensure: file
+    selinux_ignore_defaults: true
+    owner: 222006
+    group: 222006
+    mode: '0750'
+    content: 'Add web content to the "web" directory'
+  "%{lookup('TRAEFIK_DYNAMIC')}/apache.yaml":
+    ensure: file
+    selinux_ignore_defaults: true
+    owner: root
+    group: root
+    mode: '0640'
+    content: |
+      # FILE MANAGED BY PUPPET
+      # - Dynamic Traefik configuration file for Apache httpd container
+      http:
+        routers:
+          apache-router:
+            entrypoints: https
+            tls: true
+            rule: "Host(`%{::fqdn}`) && (PathPrefix(`/web`))" 
+            service: "apache"
+            #middlewares: "some-auth"
+        services:
+          apache:
+            loadBalancer:
+              servers:
+                # Match the published port from the container flags
+                - url: "http://%{::fqdn}:1080/"
+
+podman::manage_subuid: true
+podman::subid:
+  '222006':
+    subuid: 12600000
+    count: 65535
+
+podman::containers:
+  apache:
+    user: apache
+    image: 'docker.io/httpd:latest'
+    flags:
+      label:
+        - purpose=dev
+      publish:
+        - '1080:80'
+      # Bind mount the managed directory (':Z' re-labels SELinux context for containers)
+      volume: '/home/apache/data:/usr/local/apache2/htdocs:Z'
+    service_flags:
+      timeout: '60'
+    require:
+      - File[/home/apache/data]
+

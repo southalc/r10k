@@ -1,0 +1,91 @@
+---
+# Hiera based role for rootless Jenkins container deployment creates:
+# - User/Group 'jenkins' with home directory '/home/jenkins'
+# - Directory '/home/jenkins/data' for bind-mount to jenkins container under '/var/jenkins_home'
+# - Dynamic file configuration to register Jenkins with Traefik container
+# - Container 'jenkins' with prefix '/jenkins' to match Traefik rule
+# - Systemd user service 'podman-jenkins' running as 'jenkins'
+
+classes:
+  - types
+  - podman
+
+types::user:
+  jenkins:
+    ensure: present
+    forcelocal: true
+    uid:  222001
+    gid:  222001
+    password: '!!'
+    home: /home/jenkins
+    
+types::group:
+  jenkins:
+    ensure: present
+    forcelocal: true
+    gid:  222001
+
+types::file:
+  /home/jenkins:
+    ensure: directory
+    owner: 222001
+    group: 222001
+    mode: '0700'
+    require: 'User[jenkins]'
+  /home/jenkins/data:
+    ensure: directory
+    selinux_ignore_defaults: true
+    owner: 12300999
+    group: 12300999
+    mode: '0700'
+  "%{lookup('TRAEFIK_DYNAMIC')}/jenkins.yaml":
+    ensure: file
+    selinux_ignore_defaults: true
+    owner: root
+    group: root
+    mode: '0640'
+    content: |
+      # FILE MANAGED BY PUPPET
+      # - Dynamic Traefik configuration file for Jenkins container
+      http:
+        routers:
+          jenkins-router:
+            entrypoints: https
+            tls: true
+            rule: "Host(`%{::fqdn}`) && (PathPrefix(`/jenkins`))" 
+            service: "jenkins"
+            #middlewares: "some-auth"
+        services:
+          jenkins:
+            loadBalancer:
+              servers:
+                # Match the published port from the container flags
+                - url: "http://%{::fqdn}:8080/"
+
+podman::manage_subuid: true
+podman::subid:
+  '222001':
+    subuid: 12300000
+    count: 65535
+
+podman::containers:
+  jenkins:
+    user: jenkins
+    image: 'docker.io/jenkins/jenkins:lts'
+    flags:
+      user: jenkins
+      # Use JENKINS_OPTS to set a prefix for accessing Jenkins through Traefik proxy
+      env:
+        - 'JENKINS_OPTS="--prefix=/jenkins"'
+      label:
+        - purpose=dev
+      publish:
+        - '8080:8080'
+        - '50000:50000'
+      # Bind mount the managed directory (':Z' re-labels SELinux context for containers)
+      volume: '/home/jenkins/data:/var/jenkins_home:Z'
+    service_flags:
+      timeout: '60'
+    require:
+      - File[/home/jenkins/data]
+

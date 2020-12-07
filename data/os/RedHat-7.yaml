@@ -1,43 +1,22 @@
 ---
-# TYPES PUPPET MODULE, RHEL7 STIG CONFIGURATION WITH AD JOIN
+# Use 'types' module for Red Hat 7 STIG V2 hardening with Active Directory domain join
 #############################################################################################
-# Configure a RHEL7 system as an Active Directory client with full STIG compliance
+# To generate a password hash for a managed user:
+#   python2 -c 'import crypt,getpass; print crypt.crypt(getpass.getpass())'
 #
-# Use the following alias definition on RHEL7 to generate user password hashes
-# - This will use a random salt and the strongest supported hash method (currently SHA512)
-#   alias mkpasswd="python2 -c 'import crypt,getpass; print crypt.crypt(getpass.getpass())'"
-#
-# Use the following to generate a password hash suitable for `GRUB_PASSWORD_HASH`, and select
-# all the returned data beginning with 'grub.pbkdf2.sha512' through the end of the output.
+# To generate a password hash suitable for `GRUB_PASSWORD_HASH`
 #   grub2-mkpasswd-pbkdf2
 #############################################################################################
-# Used types:  binary, exec, file, package, service, schedule, file_line, mount, user, concat_file, concat_fragment, firewalld_ipset ,firewalld_rich_rule
-# Required modules:  stdlib, concat, translate, inifile, firewalld
-#
-##### CUSTOMIZE SITE LOCAL VALUES WITH THESE PARAMETERS - OPTIONALLY, SEPARATE THIS TO A SEPARATE YAML FILE #####
-# SAMBA_WORKGROUP: 'uppercase NETBIOS domain name'
-# AD_DOMAIN: 'lowercase fully qualified domain name'
-# KERBEROS_REALM: 'uppercase fully qualified domain name'
-# ADJOIN_USER: 'AD service account with permissions to join  the domain'
-# ADJOIN_KEYTAB: 'base64 encoded keytab file for the ADJOIN_USER'
-# SYSLOG_HOST: 'fqdn of the remote network syslog server'
-# NTP_SERVER1: 'IP address of primary NTP server'
-# NTP_SERVER2: 'IP address of secondary NTP server'
-# NTP_KEY: 'NTP key hash'
-# NTP_KEY_TYPE: 'NTP key hash type'
-# TIMEZONE: 'one of the abbreviated time zones as listed under /usr/share/zoneinfo'
-# AUTOFS_HOME: 'Complete string (may be multi-line) to populate an indirect automount map'
-# AUTOFS_DIRECT: 'Complete string (may be multi-line) to populate a direct automount map'
-# SUDO_ADMINS: 'comma separated list of users or groups (groups identified by a leading percent sign)'
-# GRUB_PASSWORD_HASH: 'GRUB boot menu password'
-# EPO_SERVERS: '[array_of_McAfee_ePO_servers]'
 
+classes:
+  - types
+  - firewalld
 
 types::types:
-  - 'concat_file'
-  - 'concat_fragment'
-  - 'firewalld_ipset'
-  - 'certs::cacerts'
+  - concat_file
+  - concat_fragment
+  - firewalld_ipset
+  - types::firewalld_rich_rule
 
 
 types::exec_defaults:
@@ -155,13 +134,7 @@ types::file_defaults:
 types::file:
   /etc/issue:          # V-71863
     content: |
-      You are accessing a U.S. Government (USG) Information System (IS) that is provided for USG-authorized use only.
-      By using this IS (which includes any device attached to this IS), you consent to the following conditions:
-      -The USG routinely intercepts and monitors communications on this IS for purposes including, but not limited to, penetration testing, COMSEC monitoring, network operations and defense, personnel misconduct (PM), law enforcement (LE), and counterintelligence (CI) investigations.
-      -At any time, the USG may inspect and seize data stored on this IS.
-      -Communications using, or data stored on, this IS are not private, are subject to routine monitoring, interception, and search, and may be disclosed or used for any USG-authorized purpose.
-      -This IS includes security measures (e.g., authentication and access controls) to protect USG interests--not for your personal benefit or privacy.
-      -Notwithstanding the above, using this IS does not constitute consent to PM, LE or CI investigative searching or monitoring of the content of privileged communications, or work product, related to personal representation or services by attorneys, psychotherapists, or clergy, and their assistants.  Such communications and work product are private and confidential.  See User Agreement for details.
+      This system is managed by Puppet
   /etc/localtime:
     ensure: 'link'
     target: "/usr/share/zoneinfo/%{lookup('TIMEZONE')}"
@@ -1105,7 +1078,7 @@ types::file:
     validate_cmd: '/usr/sbin/visudo -c -f %'
     content: |
       # FILE MANAGED BY PUPPET
-      %{lookup('SUDO_ADMINS')} %{hostname} = (root) PASSWD: ALL
+      %{lookup('SUDO_ADMINS')} %{hostname} = (root) NOPASSWD: ALL
   /etc/gdm:
     ensure: 'directory'
     mode: '0755'
@@ -1492,7 +1465,7 @@ types::concat_fragment:
 #    notify: 'Exec[firewalld_reload]'
 
 # Uncomment to permit McAfee ePO server access to the management agent
-#firewalld::firewalld_rich_rule:
+#types::firewalld_rich_rule:
 #  mcafee_epo_access:
 #    ensure: present
 #    zone:   'public'
