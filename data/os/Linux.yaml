@@ -1,28 +1,6 @@
 ---
 # Common to all Linux nodes
 
-types::types:
-  - 'k5login'
-
-
-types::binary_defaults:
-  ensure: 'file'
-  owner: 'root'
-  group: 'root'
-  mode:  '0600'
-
-types::binary:
-  /etc/adj.kt:
-    content: "%{lookup('ADJOIN_KEYTAB')}"
-
-
-types::k5login:
-  /root/.k5users:
-    ensure: 'present'
-    mode: '600'
-    principals: "%{alias('ROOT_K5LOGIN')}"
-
-
 types::user:
   root:
     forcelocal: true
@@ -31,39 +9,12 @@ types::user:
     expiry: absent
 
 
-types::user_defaults:
-  forcelocal: true
-
-types::user:
-  ubuntu:
-    ensure: absent
-  chris:
-    ensure: absent
-  frex:
-    ensure: absent
-
-
-types::group_defaults:
-  forcelocal: true
-
-types::group:
-  ubuntu:
-    ensure: absent
-  chris:
-    ensure: absent
-  frex:
-    ensure: absent
-
-
 types::file:
-  /home/frex:
-    ensure: 'absent'
-    force: true
   /etc/sudoers.d/admins:
     validate_cmd: '/usr/sbin/visudo -c -f %'
     content: |
-      # FILE MANAGED BY PUPPET
+      # %{lookup('FILE_HEADER')}
       %{lookup('SUDO_ADMINS')} %{hostname} = (root) NOPASSWD: ALL
   /etc/issue:
     content: |
-      System managed by Foreman with puppet.
+      System is running %{::os.name}-%{::os.release.major} and managed by Puppet %{::puppetversion}

@@ -16,7 +16,7 @@ winstall::products:
       - '/qn'
   'VMware Remote Console':
     ensure: installed
-    source: 'http://YOUR_LOCAL_URL/VMware-VMRC-11.2.0-16492666.exe'
+    source: 'http://YOUR_LOCAL_SERVER/PATH/VMware-VMRC-11.2.0-16492666.exe'
     install_options:
       - '/s'
       - '/v'
