@@ -1,6 +1,12 @@
 ---
 # Common to all Linux nodes
 
+classes:
+  - types
+
+types::types:
+  - 'k5login'
+
 types::user:
   root:
     forcelocal: true
@@ -18,3 +24,20 @@ types::file:
   /etc/issue:
     content: |
       System is running %{::os.name}-%{::os.release.major} and managed by Puppet %{::puppetversion}
+
+
+types::k5login:
+  /root/.k5users:
+    ensure: 'present'
+    mode: '600'
+    principals: "%{alias('ROOT_K5LOGIN')}"
+
+
+types::binary:
+  /etc/adj.kt:
+    ensure: 'file'
+    owner: 'root'
+    group: 'root'
+    mode:  '0600'
+    content: "%{lookup('ADJOIN_KEYTAB')}"
+

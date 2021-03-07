@@ -19,7 +19,7 @@ KERBEROS_REALM: 'uppercase DNS domain name'
 DNS_SERVERS: 'comma separated list of DNS server IP addresses'
 
 ADJOIN_USER: 'AD service account with permissions to join  the domain'
-ADJOIN_KEYTAB: 'base64 encoded keytab file for the ADJOIN_USER'
+ADJOIN_KEYTAB: 'base64 encoded keytab file for the ADJOIN_USER'   # 'types::binary' resource defined in 'data/os/Linux.yaml'
 
 SYSLOG_HOST: 'IP address or FQDN of the remote network syslog server'
 
